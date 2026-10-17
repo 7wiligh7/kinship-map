@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>亲属关系地图</title>
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+    <link rel="stylesheet" href="style.css?v=1.7" />
+    <script src="vendor/leaflet/leaflet.js"></script>
+</head>
+<body>
+    <div class="startup" id="startup">
+        <div class="startup-box">
+            <div class="startup-logo">🗺️ 亲属关系地图</div>
+            <div class="startup-sub">选择档案进入</div>
+            <div class="ws-list" id="wsList"></div>
+            <div class="ws-create-form" id="wsCreateForm" style="display:none">
+                <input class="ws-input" id="wsNameInput" placeholder="档案名（如：我们家）" maxlength="20" />
+                <div class="ws-emoji-row" id="wsEmojiRow">
+                    <span class="ws-emoji picked" data-e="🏡" onclick="pickEmoji(this)">🏡</span>
+                    <span class="ws-emoji" data-e="👨‍👩‍👧" onclick="pickEmoji(this)">👨‍👩‍👧</span>
+                    <span class="ws-emoji" data-e="🌳" onclick="pickEmoji(this)">🌳</span>
+                    <span class="ws-emoji" data-e="🏠" onclick="pickEmoji(this)">🏠</span>
+                    <span class="ws-emoji" data-e="👨‍👦" onclick="pickEmoji(this)">👨‍👦</span>
+                    <span class="ws-emoji" data-e="🌸" onclick="pickEmoji(this)">🌸</span>
+                </div>
+                <div class="ws-form-btns">
+                    <button class="btn-cancel" onclick="hideCreateForm()">取消</button>
+                    <button class="btn-confirm" onclick="createWorkspace()">创建</button>
+                </div>
+            </div>
+            <button class="ws-new-btn" id="wsNewBtn" onclick="showCreateForm()">＋ 新建档案</button>
+        </div>
+    </div>
+
+    <div class="container" id="app">
+        <div id="map"></div>
+
+        <div class="demo-banner" id="demoBanner">
+            <span>当前为演示数据</span>
+            <button onclick="clearDemo()">清空，开始记录自己的数据</button>
+        </div>
+
+        <div class="draw-hint" id="drawHint">
+            <span>点击地图加顶点（≥3 个），双击或按钮闭合</span>
+            <button onclick="undoVertex()">撤销</button>
+            <button onclick="finishRegion()">闭合命名</button>
+            <button class="hint-cancel" onclick="cancelDraw()">取消</button>
+        </div>
+
+        <div class="menu-btn" onclick="toggleSidebar()">☰</div>
+
+        <div class="location-btn" onclick="flyToMe()">⌖</div>
+
+        <div class="search-results" id="searchResults"></div>
+
+        <div class="search-bar">
+            <span class="search-icon">🔍</span>
+            <input class="search-input" id="searchInput" placeholder="搜索亲戚姓名/称谓..." oninput="onSearch(this.value)" />
+        </div>
+
+        <div class="sidebar-mask" onclick="toggleSidebar()"></div>
+
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title">亲属关系地图</span>
+                <span class="close-btn" onclick="toggleSidebar()">×</span>
+            </div>
+
+            <div class="ws-bar">
+                <span class="ws-bar-emoji" id="wsBarEmoji">🏡</span>
+                <span class="ws-bar-name" id="wsBarName">档案</span>
+                <button class="ws-bar-switch" onclick="showStartup()">切换</button>
+            </div>
+
+            <div class="region-box">
+                <div class="region-label">当前区域</div>
+                <div class="region-current" id="regionCurrent">未划定</div>
+                <div class="region-list" id="regionList"></div>
+                <div class="place-search">
+                    <input class="place-input" id="placeInput" placeholder="地名，或「纬度,经度」" onkeydown="if (event.key === 'Enter') searchPlaces()" />
+                    <button class="place-btn" onclick="searchPlaces()">搜索</button>
+                </div>
+                <div class="place-results" id="placeResults"></div>
+                <button class="region-add" onclick="startDrawRegion()">＋ 地图上框选新区域</button>
+            </div>
+
+            <div class="sidebar-menu">
+                <div class="menu-item" onclick="openAddPerson()">
+                    <span class="menu-icon">📍</span>
+                    <span class="menu-text">添加人物</span>
+                </div>
+
+                <div class="menu-item" onclick="openGraph()">
+                    <span class="menu-icon">👥</span>
+                    <span class="menu-text">人物关系图</span>
+                </div>
+
+                <div class="menu-item" onclick="importData()">
+                    <span class="menu-icon">📥</span>
+                    <span class="menu-text">导入数据</span>
+                </div>
+
+                <div class="menu-item" onclick="exportData()">
+                    <span class="menu-icon">📤</span>
+                    <span class="menu-text">导出数据</span>
+                </div>
+
+                <div class="menu-item" onclick="clearAll()">
+                    <span class="menu-icon">🗑️</span>
+                    <span class="menu-text">清除全部</span>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <span class="version">v2.0</span>
+            </div>
+        </div>
+
+        <div class="modal" id="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <span class="modal-title" id="modalTitle">添加人物</span>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">姓名</label>
+                    <input class="input" id="inputName" placeholder="输入姓名" />
+                </div>
+
+                <div class="form-group">
+                    <label class="label">性别</label>
+                    <select class="input" id="inputGender">
+                        <option value="">未填</option>
+                        <option value="m">男</option>
+                        <option value="f">女</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">手填称谓（推算不出时的兜底）</label>
+                    <div id="titleList">
+                        <div class="title-row">
+                            <input class="input title-input" placeholder="输入称谓" />
+                            <span class="btn-remove" onclick="removeTitleRow(this)">×</span>
+                        </div>
+                    </div>
+                    <button class="btn-add-title" onclick="addTitleRow()">+ 添加称谓</button>
+                </div>
+
+                <div class="form-group root-row">
+                    <label>
+                        <input type="checkbox" id="inputRoot" />
+                        标记为“我”（称谓推算起点）
+                    </label>
+                </div>
+
+                <div class="modal-buttons">
+                    <button class="btn-cancel" onclick="closeModal()">取消</button>
+                    <button class="btn-delete" id="btnDelete" onclick="deletePerson()" style="display:none">删除</button>
+                    <button class="btn-confirm" onclick="confirmPerson()">确定</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="context-menu" id="contextMenu">
+            <div class="context-menu-item" onclick="editFromMenu()">编辑</div>
+            <div class="context-menu-item delete" onclick="deleteFromMenu()">删除</div>
+        </div>
+
+        <div class="info-card" id="infoCard">
+            <div class="info-card-header">
+                <div>
+                    <span class="info-card-name" id="infoName">-</span>
+                    <span class="kin-badge" id="infoKin" style="display:none"></span>
+                </div>
+                <span class="close-btn" onclick="closeInfoCard()">×</span>
+            </div>
+            <div class="info-card-titles" id="infoTitles"></div>
+            <div class="info-card-path" id="infoPath"></div>
+
+            <div class="rel-list-title">人物关系</div>
+            <div id="relList"></div>
+
+            <div class="rel-form" id="relForm">
+                <div class="rel-line">
+                    <select id="relFrom"></select>
+                    <span>是</span>
+                    <select id="relTo"></select>
+                    <span>的</span>
+                </div>
+                <div class="rel-line">
+                    <select id="relType"></select>
+                    <button class="btn-confirm btn-small" onclick="saveRelation()">添加</button>
+                    <button class="btn-cancel btn-small" onclick="hideRelForm()">取消</button>
+                </div>
+            </div>
+
+            <div class="info-card-buttons">
+                <button class="btn-cancel" onclick="closeInfoCard()">关闭</button>
+                <button class="btn-cancel" onclick="showRelForm()">+ 关系</button>
+                <button class="btn-confirm" onclick="editFromCard()">编辑</button>
+                <button class="btn-cancel" onclick="openGraph()">关系图</button>
+            </div>
+        </div>
+
+        <div class="graph-panel" id="graphPanel">
+            <div class="graph-header">
+                <span class="graph-title">人物关系图</span>
+                <span class="graph-root" id="graphRoot"></span>
+                <span class="graph-hint">悬停高亮路径 · 点击定位</span>
+                <span class="close-btn" onclick="closeGraph()">×</span>
+            </div>
+            <div class="graph-body" id="graphBody"></div>
+        </div>
+
+        <div class="dialog" id="dialog">
+            <div class="dialog-box">
+                <div class="dialog-title" id="dialogTitle"></div>
+                <div class="dialog-body" id="dialogBody"></div>
+                <div class="dialog-buttons" id="dialogButtons"></div>
+            </div>
+        </div>
+
+        <div class="toast" id="toast">-</div>
+
+        <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="handleImport(this)" />
+    </div>
+
+    <script src="config.js"></script>
+    <script src="kinship.js"></script>
+    <script src="app.js?v=1.7"></script>
+</body>
+</html>
