@@ -7,6 +7,14 @@ var CONFIG = {
   MIN_ZOOM: 10,
   MAX_ZOOM: 19,
 
+  // 进入档案/切换区域时的默认视野
+  VIEW: {
+    PADDING: [40, 40],   // 适配内边距（像素）
+    MAX_ZOOM: 15,        // 区域较小时最多放大到的层级（越小，看到的范围越大）
+    EXPAND: 0.5,         // 区域边界外扩比例（0.5 ≈ 四周各扩 50% 跨度）
+    TILE_MARGIN: 1.0     // 瓦片比实际视野再外扩的比例，避免扩大后边缘留白
+  },
+
   TILE: {
     // 默认网络卫星底图（免注册免 key）
     NETWORK: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',

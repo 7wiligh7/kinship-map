@@ -13,6 +13,7 @@ var state = {
     markers: {},
     markerLayer: null,
     regionLayer: null,
+    tileBounds: null,
     selectedId: null,
     editingId: null
 };
@@ -297,6 +298,7 @@ function enterWorkspace(id) {
     state.workspace = ws;
     state.isDemo = !!ws.demo;
     state.data = loadWs(id) || freshV3();
+    state.tileBounds = null;
     document.getElementById('startup').classList.add('hidden');
     document.getElementById('wsBarEmoji').textContent = ws.emoji || '🏡';
     document.getElementById('wsBarName').textContent = ws.name;
@@ -444,9 +446,10 @@ function initMap() {
 
 function regionTileBounds() {
     if (!CONFIG.TILE_LIMIT_TO_REGION || !state.data || draw.active) return null;
+    if (state.tileBounds) return state.tileBounds;
     var r = activeRegion();
     if (!r || !r.polygon || r.polygon.length < 3) return null;
-    return L.latLngBounds(r.polygon).pad(0.12);
+    return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
 }
 
 function buildTiles() {
@@ -467,9 +470,14 @@ function buildTiles() {
 function syncTileBounds() {
     if (!map || !state.tileDefs) return;
     var r = activeRegion();
-    var key = (!CONFIG.TILE_LIMIT_TO_REGION || draw.active || !r)
-        ? 'none'
-        : r.id + '|' + r.polygon.length + '|' + r.polygon[0][0].toFixed(5) + ',' + r.polygon[0][1].toFixed(5);
+    var key;
+    if (!CONFIG.TILE_LIMIT_TO_REGION || draw.active || !r) {
+        key = 'none';
+    } else if (state.tileBounds) {
+        key = 'view|' + state.tileBounds.toBBoxString();
+    } else {
+        key = r.id + '|' + r.polygon.length + '|' + r.polygon[0][0].toFixed(5) + ',' + r.polygon[0][1].toFixed(5);
+    }
     if (key === state._tileKey) return;
     state._tileKey = key;
     buildTiles();
@@ -484,10 +492,24 @@ function fitActiveRegion() {
     if (!map || !state.data) return;
     var r = activeRegion();
     if (r) {
-        map.fitBounds(L.latLngBounds(r.polygon), { padding: [40, 40], maxZoom: 17 });
+        fitRegion(r);
         return;
     }
     fitData(true);
+}
+
+// 把视野适配到某个区域：区域边界外扩一截，且最多放大到 VIEW.MAX_ZOOM，
+// 让启动后能看到区域周边（而不是紧贴区域）。随后把瓦片范围设定为实际视野再外扩一圈。
+function fitRegion(r) {
+    if (!map || !r || !r.polygon || r.polygon.length < 3) return;
+    map.fitBounds(L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND), {
+        padding: CONFIG.VIEW.PADDING,
+        maxZoom: CONFIG.VIEW.MAX_ZOOM,
+        animate: false
+    });
+    state.tileBounds = map.getBounds().pad(CONFIG.VIEW.TILE_MARGIN);
+    state._tileKey = null;
+    syncTileBounds();
 }
 
 function fitData(force) {
@@ -497,9 +519,9 @@ function fitData(force) {
         if (p.lat != null && p.lng != null) pts.push([p.lat, p.lng]);
     });
     if (pts.length) {
-        map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 16 });
+        map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: CONFIG.VIEW.MAX_ZOOM });
     } else if (force) {
-        map.setView(CONFIG.CENTER, CONFIG.ZOOM);
+        map.setView(CONFIG.CENTER, CONFIG.VIEW.MAX_ZOOM);
     }
 }
 
@@ -566,9 +588,10 @@ function switchRegion(id) {
     var r = state.data.regions.filter(function (x) { return x.id === id; })[0];
     if (!r) return;
     state.data.activeRegionId = id;
+    state.tileBounds = null;
     saveData();
     renderRegions();
-    map.fitBounds(L.latLngBounds(r.polygon), { padding: [40, 40], maxZoom: 17 });
+    fitRegion(r);
     toggleSidebarIfOpen();
     toast('已切换到「' + r.name + '」');
 }
@@ -584,9 +607,11 @@ function deleteRegion(id) {
         if (p.regionId === id) p.regionId = newActive;
     });
     state.data.activeRegionId = newActive;
+    state.tileBounds = null;
     saveData();
     renderRegions();
     renderAll(false);
+    fitActiveRegion();
     toast('已删除区域');
 }
 
@@ -663,9 +688,10 @@ function finishRegion() {
                     cleanupDraw();
                     state.data.regions.push(region);
                     state.data.activeRegionId = region.id;
+                    state.tileBounds = null;
                     saveData();
                     renderRegions();
-                    map.fitBounds(L.latLngBounds(region.polygon), { padding: [40, 40], maxZoom: 17 });
+                    fitRegion(region);
                     toast('已创建区域「' + name + '」');
                     if (pendingDraft) {
                         var draft = pendingDraft;
@@ -898,12 +924,13 @@ function createRegionFromPlace(i) {
     var region = { id: newRegionId(), name: r.name || '新区域', polygon: poly };
     state.data.regions.push(region);
     state.data.activeRegionId = region.id;
+    state.tileBounds = null;
     saveData();
     renderRegions();
     state._placeResults = null;
     document.getElementById('placeResults').innerHTML = '';
     document.getElementById('placeInput').value = '';
-    map.fitBounds(L.latLngBounds(region.polygon), { padding: [40, 40], maxZoom: 16 });
+    fitRegion(region);
     toggleSidebarIfOpen();
     toast('已按「' + region.name + '」添加区域');
     if (pendingDraft) {
