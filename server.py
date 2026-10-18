@@ -15,6 +15,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    # 开发期禁用缓存：改完代码普通刷新即生效。
+    # 否则 index.html 无版本号参数，会被浏览器启发式缓存，出现“改了却还是旧的”。
+    def end_headers(self):
+        self.send_header('Cache-Control', 'no-cache')
+        super().end_headers()
+
 
 class DualStackServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True

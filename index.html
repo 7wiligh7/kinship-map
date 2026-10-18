@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>亲属关系地图</title>
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.7" />
+    <link rel="stylesheet" href="style.css?v=1.10" />
     <script src="vendor/leaflet/leaflet.js"></script>
 </head>
 <body>
@@ -42,7 +42,7 @@
         </div>
 
         <div class="draw-hint" id="drawHint">
-            <span>点击地图加顶点（≥3 个），双击或按钮闭合</span>
+            <span>点击地图加顶点（≥3 个），双击或按钮闭合。建议跨度 ≤20km，相邻较远的居住地请分开建区</span>
             <button onclick="undoVertex()">撤销</button>
             <button onclick="finishRegion()">闭合命名</button>
             <button class="hint-cancel" onclick="cancelDraw()">取消</button>
@@ -229,6 +229,6 @@
 
     <script src="config.js"></script>
     <script src="kinship.js"></script>
-    <script src="app.js?v=1.7"></script>
+    <script src="app.js?v=1.10"></script>
 </body>
 </html>
