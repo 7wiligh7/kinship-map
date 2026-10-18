@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>亲属关系地图</title>
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.10" />
+    <link rel="stylesheet" href="style.css?v=1.14" />
     <script src="vendor/leaflet/leaflet.js"></script>
 </head>
 <body>
@@ -16,6 +16,12 @@
             <div class="ws-list" id="wsList"></div>
             <div class="ws-create-form" id="wsCreateForm" style="display:none">
                 <input class="ws-input" id="wsNameInput" placeholder="档案名（如：我们家）" maxlength="20" />
+                <input class="ws-input" id="wsPlaceInput" placeholder="主要居住地（可选，如：李家村）" maxlength="30" onkeydown="if(event.key==='Enter') searchNewWsPlace()" />
+                <div class="ws-place-row">
+                    <button class="btn-cancel" onclick="searchNewWsPlace()">搜索位置</button>
+                    <span class="ws-place-hint" id="wsPlaceHint">选好后创建档案，会自动建成第一个区域</span>
+                </div>
+                <div class="ws-place-results" id="wsPlaceResults"></div>
                 <div class="ws-emoji-row" id="wsEmojiRow">
                     <span class="ws-emoji picked" data-e="🏡" onclick="pickEmoji(this)">🏡</span>
                     <span class="ws-emoji" data-e="👨‍👩‍👧" onclick="pickEmoji(this)">👨‍👩‍👧</span>
@@ -43,6 +49,7 @@
 
         <div class="draw-hint" id="drawHint">
             <span>点击地图加顶点（≥3 个），双击或按钮闭合。建议跨度 ≤20km，相邻较远的居住地请分开建区</span>
+            <span class="draw-span" id="drawSpan"></span>
             <button onclick="undoVertex()">撤销</button>
             <button onclick="finishRegion()">闭合命名</button>
             <button class="hint-cancel" onclick="cancelDraw()">取消</button>
@@ -227,8 +234,8 @@
         <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="handleImport(this)" />
     </div>
 
-    <script src="config.js"></script>
+    <script src="config.js?v=1.14"></script>
     <script src="kinship.js"></script>
-    <script src="app.js?v=1.10"></script>
+    <script src="app.js?v=1.14"></script>
 </body>
 </html>

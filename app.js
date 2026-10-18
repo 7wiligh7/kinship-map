@@ -253,10 +253,47 @@ function pickEmoji(el) {
     });
 }
 
+// 建档表单里搜主要居住地：选中的结果会在建档后自动建成第一个区域。
+function searchNewWsPlace() {
+    var input = document.getElementById('wsPlaceInput');
+    var box = document.getElementById('wsPlaceResults');
+    var q = input.value.trim();
+    if (!q) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="place-empty">搜索中…</div>';
+    geocode(q).then(function (list) {
+        if (!list || !list.length) {
+            box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」</div>';
+            return;
+        }
+        state._newWsPlaces = list;
+        box.innerHTML = list.map(function (r, i) {
+            return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
+                '<span class="place-name">' + esc(r.name) + '</span>' +
+                (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
+                '</div>';
+        }).join('');
+    }).catch(function () {
+        box.innerHTML = '<div class="place-empty">搜索失败：网络不可达<br>可在 config.js 填高德 key，或直接输入「纬度,经度」</div>';
+    });
+}
+
+function pickNewWsPlace(i) {
+    var r = (state._newWsPlaces || [])[i];
+    if (!r) return;
+    state._newWsPlace = r;
+    document.getElementById('wsPlaceResults').innerHTML = '';
+    document.getElementById('wsPlaceHint').innerHTML = '已选：<b>' + esc(r.name) + '</b>';
+}
+
 function hideCreateForm() {
     document.getElementById('wsCreateForm').style.display = 'none';
     document.getElementById('wsNewBtn').style.display = 'block';
     document.getElementById('wsNameInput').value = '';
+    document.getElementById('wsPlaceInput').value = '';
+    document.getElementById('wsPlaceResults').innerHTML = '';
+    document.getElementById('wsPlaceHint').textContent = '选好后创建档案，会自动建成第一个区域';
+    state._newWsPlace = null;
+    state._newWsPlaces = null;
 }
 
 function createWorkspace() {
@@ -275,8 +312,30 @@ function createWorkspace() {
         saveWsList(list);
     }
     saveWsData(ws.id, data);
+    var pendingPlace = state._newWsPlace;
     hideCreateForm();
     enterWorkspace(ws.id);
+    // 建档时选过居住地 → 自动建成第一个区域（演示数据自带区域，不覆盖）
+    if (pendingPlace && state.data && !state.data.regions.length) {
+        var poly = placePolygon(pendingPlace);
+        if (poly) {
+            var km = spanKmOf(poly);
+            if (km <= CONFIG.REGION_MAX_SPAN_KM) {
+                addRegionFromPlace(pendingPlace.name || name, poly);
+            } else {
+                var rName = pendingPlace.name || name;
+                showDialog({
+                    title: '区域跨度超出建议上限',
+                    body: '<div class="dialog-note">「' + esc(rName) + '」的涵盖范围约 ' + Math.round(km) + ' km，超过建议上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km。<br/>' +
+                        '建议搜索更具体的地名（如村/镇），或进档案后手绘框选。仍要创建吗？</div>',
+                    buttons: [
+                        { label: '不创建' },
+                        { label: '仍创建', cls: 'primary', onClick: function () { addRegionFromPlace(rName, poly); } }
+                    ]
+                });
+            }
+        }
+    }
 }
 
 function deleteWorkspace(id) {
@@ -409,6 +468,8 @@ function initMap() {
         maxZoom: CONFIG.MAX_ZOOM,
         maxBoundsViscosity: 1.0 /* 平移硬墙：拖不出去 */
     });
+    // 缩放控件挪到右上角，与定位键同列（否则和左上角菜单按钮重叠）
+    if (map.zoomControl) map.zoomControl.setPosition('topright');
     state.tileDefs = [];
     if (CONFIG.TILE.LOCAL) {
         state.tileDefs.push({
@@ -440,7 +501,11 @@ function initMap() {
         syncTileBounds(); /* 放置完成：恢复瓦片范围 + 平移硬墙 */
         openPersonModal(null, e.latlng);
     });
-    window.addEventListener('resize', function () { if (map) map.invalidateSize(); });
+    window.addEventListener('resize', function () {
+        if (!map) return;
+        map.invalidateSize();
+        syncMapPan(); // 视口尺寸变了，缩放下限要重算
+    });
 }
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
@@ -455,14 +520,24 @@ function regionTileBounds() {
     return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
 }
 
-// 平移硬边界：与瓦片边界同一来源（区域外扩），无区域或绘制模式时解锁。
+// 平移硬边界 + 缩放下限：与瓦片边界同一来源（区域外扩），
+// 无区域 / 绘制模式 / 放置模式时都解锁。
 function syncMapPan() {
     if (!map) return;
     var b = regionTileBounds();
     map.setMaxBounds(b); // 传 null/空边界时 Leaflet 自动解除限制
-    if (b && !b.contains(map.getCenter())) {
-        // 切到新区域时旧视野可能在新边界外：把中心拉回边界内
-        map.panInsideBounds(b, { animate: false });
+    if (b) {
+        // 缩放下限 = 区域外扩范围恰好铺满视口的那一级：再缩小就看到区域外了。
+        // 退化多边形（跨度为 0）会让 getBoundsZoom 返回异常值，这里兜底保护，
+        // 否则 minZoom 可能被设成 maxZoom，缩放被锁死。
+        var zMin = map.getBoundsZoom(b);
+        if (isFinite(zMin)) map.setMinZoom(Math.min(zMin, CONFIG.MAX_ZOOM));
+        if (!b.contains(map.getCenter())) {
+            // 切到新区域时旧视野可能在新边界外：把中心拉回边界内
+            map.panInsideBounds(b, { animate: false });
+        }
+    } else {
+        map.setMinZoom(CONFIG.MIN_ZOOM);
     }
 }
 
@@ -511,13 +586,13 @@ function fitActiveRegion() {
     fitData(true);
 }
 
-// 把视野适配到某个区域：区域边界外扩一截，且最多放大到 VIEW.MAX_ZOOM，
-// 让启动后能看到区域周边（而不是紧贴区域）。瓦片/平移边界由 syncTileBounds 同步。
+// 把视野适配到某个区域：区域边界外扩一截，装满视口。
+// 与 syncMapPan 的缩放下限保持一致，所以这里不再设 maxZoom：
+// 否则这里算出的远景会被后面的 minZoom 强制拉近，配置项形同虚设。
 function fitRegion(r) {
     if (!map || !r || !r.polygon || r.polygon.length < 3) return;
     map.fitBounds(L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND), {
         padding: CONFIG.VIEW.PADDING,
-        maxZoom: CONFIG.VIEW.MAX_ZOOM,
         animate: false
     });
     state._tileKey = null;
@@ -646,6 +721,7 @@ function addVertex(latlng) {
     draw.vertexMarkers.push(mk);
     if (draw.preview) map.removeLayer(draw.preview);
     draw.preview = L.polyline(draw.vertices, { color: '#d32f2f', weight: 2, dashArray: '5 4' }).addTo(map);
+    updateDrawSpan();
 }
 
 function undoVertex() {
@@ -655,6 +731,7 @@ function undoVertex() {
     if (mk) map.removeLayer(mk);
     if (draw.preview) { map.removeLayer(draw.preview); draw.preview = null; }
     if (draw.vertices.length) draw.preview = L.polyline(draw.vertices, { color: '#d32f2f', weight: 2, dashArray: '5 4' }).addTo(map);
+    updateDrawSpan();
 }
 
 function cleanupDraw() {
@@ -665,6 +742,7 @@ function cleanupDraw() {
     draw.vertices = [];
     document.getElementById('drawHint').classList.remove('show');
     if (map) map.doubleClickZoom.enable();
+    updateDrawSpan();
     syncTileBounds();
 }
 
@@ -685,7 +763,15 @@ function cancelDraw() {
 }
 
 function finishRegion() {
+    // 少于 3 个顶点：保留绘制状态，让用户继续补点（这里不撤销）
     if (draw.vertices.length < 3) { toast('至少需要 3 个顶点'); return; }
+    // 闭合瞬间就校验：不合规直接撤销本次绘制，提示重新划定（不打断命名流程）
+    var bad = regionInvalidReason(draw.vertices);
+    if (bad) {
+        cleanupDraw(); /* 用 cleanupDraw 而非 cancelDraw：保留待放置的人物草稿 */
+        toast(bad + '，已撤销本次框选，请重新划定', 4000);
+        return;
+    }
     showDialog({
         title: '区域命名',
         body: '<input class="input" id="regionNameInput" placeholder="如：老家、岳父家" maxlength="20" />',
@@ -694,23 +780,8 @@ function finishRegion() {
             {
                 label: '创建', cls: 'primary', onClick: function () {
                     var name = (document.getElementById('regionNameInput') && document.getElementById('regionNameInput').value || '').trim() || '未命名区域';
-                    var verts = draw.vertices.slice();
-                    var km = spanKmOf(verts);
-                    if (km <= CONFIG.REGION_MAX_SPAN_KM) {
-                        createRegion(name, verts);
-                    } else {
-                        var parts = [];
-                        parts.push('所选区域跨度约 ' + Math.round(km) + ' km，超过建议上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km。');
-                        parts.push('相邻但分开的居住地请各建一个区域、切换查看：区域越大，瓦片与标注的加载负担越重。<br/>仍要创建吗？');
-                        showDialog({
-                            title: '区域跨度超出建议上限',
-                            body: '<div class="dialog-note">' + parts[0] + '<br/>' + parts[1] + '</div>',
-                            buttons: [
-                                { label: '重新框选', onClick: function () { cancelDraw(); } },
-                                { label: '仍创建', cls: 'primary', onClick: function () { createRegion(name, verts); } }
-                            ]
-                        });
-                    }
+                    // 跨度/面积已由上面的 regionInvalidReason 校验过，直接建区
+                    createRegion(name, draw.vertices.slice());
                 }
             }
         ]
@@ -744,6 +815,46 @@ function spanKmOf(poly) {
     var kmLat = Math.abs(b.getNorth() - b.getSouth()) * 111;
     var kmLng = Math.abs(b.getEast() - b.getWest()) * 111 * Math.cos((b.getNorth() + b.getSouth()) / 2 * Math.PI / 180);
     return Math.max(kmLat, kmLng);
+}
+
+// 多边形面积（km²，鞋带公式，按平均纬度做等距近似）——用来识别"共线没围出面积"
+function polyAreaKm2(poly) {
+    if (!poly || poly.length < 3) return 0;
+    var clat = 0;
+    poly.forEach(function (v) { clat += v[0]; });
+    clat /= poly.length;
+    var rad = Math.PI / 180, R = 6371;
+    var pts = poly.map(function (v) {
+        return [v[1] * rad * R * Math.cos(clat * rad), v[0] * rad * R];
+    });
+    var s = 0;
+    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        s += (pts[j][0] + pts[i][0]) * (pts[j][1] - pts[i][1]);
+    }
+    return Math.abs(s / 2);
+}
+
+// 区域合规校验：返回 null 表示合规，否则返回不合规原因
+// 阈值都在 config.js（REGION_MIN_SPAN_KM / REGION_MIN_AREA_KM2 / REGION_MAX_SPAN_KM）
+function regionInvalidReason(poly) {
+    if (!poly || poly.length < 3) return '至少需要 3 个顶点';
+    var km = spanKmOf(poly);
+    if (km < CONFIG.REGION_MIN_SPAN_KM) return '范围过小（顶点几乎重合）';
+    if (polyAreaKm2(poly) < CONFIG.REGION_MIN_AREA_KM2) {
+        return '顶点几乎在一条线上，没有围出面积（跨度约 ' + Math.round(km) + ' km）';
+    }
+    if (km > CONFIG.REGION_MAX_SPAN_KM) return '跨度约 ' + Math.round(km) + ' km，超过上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km';
+    return null;
+}
+
+// 绘制过程中实时显示当前跨度，提前知道有没有超限
+function updateDrawSpan() {
+    var el = document.getElementById('drawSpan');
+    if (!el) return;
+    if (!draw.active || draw.vertices.length < 2) { el.textContent = ''; return; }
+    var km = spanKmOf(draw.vertices);
+    el.textContent = '当前跨度约 ' + (km < 10 ? km.toFixed(1) : Math.round(km)) + ' km / 上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km';
+    el.classList.toggle('over', km > CONFIG.REGION_MAX_SPAN_KM);
 }
 
 /* ===== place search (geocode) ===== */
@@ -952,13 +1063,18 @@ function bboxPolygon(b) {
     ];
 }
 
+// 从一条地理编码结果取出多边形：优先用 bbox，否则用坐标点画小方框
+function placePolygon(r) {
+    if (r.bbox) return bboxPolygon(r.bbox);
+    if (typeof r.lat === 'number' && typeof r.lng === 'number') return boxAround([[r.lat, r.lng]], 0.004);
+    return null;
+}
+
 function createRegionFromPlace(i) {
     if (!state.data) return;
     var r = (state._placeResults || [])[i];
     if (!r) return;
-    var poly = null;
-    if (r.bbox) poly = bboxPolygon(r.bbox);
-    else if (typeof r.lat === 'number' && typeof r.lng === 'number') poly = boxAround([[r.lat, r.lng]], 0.004);
+    var poly = placePolygon(r);
     if (!poly) { toast('该结果没有可用范围'); return; }
     var name = r.name || '新区域';
     var km = spanKmOf(poly);
@@ -1004,7 +1120,9 @@ function flyToPlace(i) {
     if (!r) return;
     var b = r.bbox ? L.latLngBounds([[r.bbox.south, r.bbox.west], [r.bbox.north, r.bbox.east]]) : null;
     if (b) {
-        map.setView(b.getCenter(), 17, { animate: true });
+        // 大范围（如市级）用 fitBounds 保留参照，小范围用上限 17 拉近；
+        // 若被缩放下限拦住，Leaflet 会自动钳到允许的级别，不会越界
+        map.fitBounds(b, { maxZoom: 17, animate: true });
     } else {
         map.setView([r.lat, r.lng], 17, { animate: true });
     }
