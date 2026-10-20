@@ -401,12 +401,19 @@ function synthRegion(persons) {
     return { id: newRegionId(), name: '默认区域', polygon: poly };
 }
 
+function normAge(v) {
+    if (v === null || v === undefined || v === '' || v === true || v === false) return null;
+    var n = typeof v === 'number' ? v : Number(String(v).trim());
+    if (!isFinite(n) || n < 0 || n > 150) return null;
+    return Math.floor(n);
+}
+
 function normalizeData(d) {
     if (!d || typeof d !== 'object') return null;
     if (Array.isArray(d.buildings)) {
         d = {
             persons: d.buildings.map(function (b) {
-                return { id: b.id, name: b.name || '', gender: b.gender || '', titles: b.titles || [], lat: b.lat, lng: b.lng };
+                return { id: b.id, name: b.name || '', gender: b.gender || '', age: normAge(b.age), titles: b.titles || [], lat: b.lat, lng: b.lng };
             }),
             relations: [],
             rootId: d.rootId || null
@@ -421,6 +428,7 @@ function normalizeData(d) {
             id: String(p.id),
             name: p.name,
             gender: p.gender === 'm' || p.gender === 'f' ? p.gender : '',
+            age: normAge(p.age),
             titles: Array.isArray(p.titles) ? p.titles.filter(function (t) { return typeof t === 'string' && t.trim(); }) : [],
             lat: typeof p.lat === 'number' ? p.lat : null,
             lng: typeof p.lng === 'number' ? p.lng : null,
@@ -506,6 +514,8 @@ function initMap() {
         map.invalidateSize();
         syncMapPan(); // 视口尺寸变了，缩放下限要重算
     });
+    map.on('zoomend', syncZoomFreeze);
+    syncZoomFreeze();
 }
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
@@ -538,6 +548,21 @@ function syncMapPan() {
         }
     } else {
         map.setMinZoom(CONFIG.MIN_ZOOM);
+    }
+}
+
+// 到达最大缩放级即「定格」：禁用拖动/惯性，地图停在当前画面，不再因拖动发出新瓦片请求；
+// 缩小后自动恢复拖动。滚轮/缩放按钮仍可缩小， pinch 放大本身已被 maxZoom 封顶。
+function syncZoomFreeze() {
+    if (!map) return;
+    var hit = map.getZoom() >= CONFIG.MAX_ZOOM - 1e-9;
+    if (hit === state._zoomFrozen) return;
+    state._zoomFrozen = hit;
+    if (hit) {
+        map.dragging.disable();
+        toast('已到最大缩放：地图定格，缩小后恢复', 1800);
+    } else {
+        map.dragging.enable();
     }
 }
 
@@ -754,6 +779,7 @@ function cancelDraw() {
         openPersonModal(null, L.latLng(draft.lat, draft.lng));
         document.getElementById('inputName').value = draft.name;
         document.getElementById('inputGender').value = draft.gender;
+        document.getElementById('inputAge').value = draft.age != null ? draft.age : '';
         document.getElementById('titleList').innerHTML = '';
         (draft.titles.length ? draft.titles : ['']).forEach(function (t) { addTitleRow(t); });
         document.getElementById('inputRoot').checked = !!draft.isRoot;
@@ -1167,18 +1193,18 @@ function flyToPlace(i) {
 /* ===== demo ===== */
 
 function demoData() {
-    function d(id, name, gender, lat, lng) {
-        return { id: id, name: name, gender: gender, titles: [], lat: lat, lng: lng, regionId: 'r_demo' };
+    function d(id, name, gender, age, lat, lng) {
+        return { id: id, name: name, gender: gender, age: age, titles: [], lat: lat, lng: lng, regionId: 'r_demo' };
     }
     var persons = [
-        d('d_gf', '爷爷', 'm', 31.0016, 111.0004),
-        d('d_gm', '奶奶', 'f', 31.0015, 111.0011),
-        d('d_bo', '伯父', 'm', 31.0010, 110.9996),
-        d('d_co', '堂哥', 'm', 31.0005, 110.9991),
-        d('d_fa', '爸', 'm', 31.0003, 111.0002),
-        d('d_mo', '妈', 'f', 30.9999, 111.0010),
-        d('d_yi', '小姨', 'f', 30.9995, 111.0015),
-        d('d_me', '我', 'm', 30.9992, 111.0000)
+        d('d_gf', '爷爷', 'm', 78, 31.0016, 111.0004),
+        d('d_gm', '奶奶', 'f', 76, 31.0015, 111.0011),
+        d('d_bo', '伯父', 'm', 52, 31.0010, 110.9996),
+        d('d_co', '堂哥', 'm', 27, 31.0005, 110.9991),
+        d('d_fa', '爸', 'm', 50, 31.0003, 111.0002),
+        d('d_mo', '妈', 'f', 48, 30.9999, 111.0010),
+        d('d_yi', '小姨', 'f', 43, 30.9995, 111.0015),
+        d('d_me', '我', 'm', 24, 30.9992, 111.0000)
     ];
     return {
         version: 3,
@@ -1258,6 +1284,7 @@ function openPersonModal(id, latlng) {
     document.getElementById('modalTitle').textContent = p ? '编辑人物' : '添加人物';
     document.getElementById('inputName').value = p ? p.name : '';
     document.getElementById('inputGender').value = p ? p.gender : '';
+    document.getElementById('inputAge').value = p && p.age != null ? p.age : '';
     document.getElementById('inputRoot').checked = p ? p.id === state.data.rootId : false;
     var tl = document.getElementById('titleList');
     tl.innerHTML = '';
@@ -1300,6 +1327,7 @@ function confirmPerson() {
     var draft = {
         name: name,
         gender: document.getElementById('inputGender').value,
+        age: normAge(document.getElementById('inputAge').value),
         titles: collectTitles(),
         isRoot: document.getElementById('inputRoot').checked,
         lat: null,
@@ -1311,6 +1339,7 @@ function confirmPerson() {
         if (!p) { closeModal(); return; }
         p.name = draft.name;
         p.gender = draft.gender;
+        p.age = draft.age;
         p.titles = draft.titles;
         if (draft.isRoot) state.data.rootId = p.id;
         else if (state.data.rootId === p.id) state.data.rootId = null;
@@ -1384,6 +1413,7 @@ function savePersonDraft(draft, regionId) {
         id: newId(),
         name: draft.name,
         gender: draft.gender,
+        age: draft.age != null ? draft.age : null,
         titles: draft.titles,
         lat: draft.lat,
         lng: draft.lng,
@@ -1491,7 +1521,10 @@ function openInfoCard(id) {
         kin.style.display = 'none';
         pathEl.classList.remove('show');
     }
-    document.getElementById('infoTitles').textContent = p.titles.length ? '手填称谓：' + p.titles.join('、') : '';
+    var bits = [];
+    if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
+    if (p.titles.length) bits.push('手填称谓：' + p.titles.join('、'));
+    document.getElementById('infoTitles').textContent = bits.join('　');
     renderRelList(id);
     document.getElementById('relForm').classList.remove('show');
     document.getElementById('infoCard').classList.add('show');

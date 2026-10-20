@@ -40,7 +40,7 @@ python server.py
   ],
   "activeRegionId": "R1",
   "persons": [
-    { "id": "唯一id", "name": "姓名", "gender": "m|f|空", "titles": ["手填称谓"],
+    { "id": "唯一id", "name": "姓名", "gender": "m|f|空", "age": 年龄或null, "titles": ["手填称谓"],
       "lat": 纬度, "lng": 经度, "regionId": "R1" }
   ],
   "relations": [
