@@ -809,6 +809,33 @@ function createRegion(name, verts) {
     }
 }
 
+// 两线段是否真交叉（严格相交，端点接触不算）
+function segCross(p1, p2, p3, p4) {
+    function d(a, b, c) {
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    }
+    var d1 = d(p3, p4, p1), d2 = d(p3, p4, p2);
+    var d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+    function opp(x, y) { return (x > 0 && y < 0) || (x < 0 && y > 0); }
+    return opp(d1, d2) && opp(d3, d4);
+}
+
+// 多边形是否自相交（"8 字形"这类边穿过边）。返回交叉描述或 null。
+// 相邻边共享端点不算；首尾两条边在闭合意义下相邻，也跳过。
+function selfIntersectReason(poly) {
+    var n = poly.length;
+    if (n < 4) return null;
+    for (var i = 0; i < n; i++) {
+        for (var j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue;
+            if (segCross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) {
+                return '边框自相交（第 ' + (i + 1) + ' 与第 ' + (j + 1) + ' 条边交叉）';
+            }
+        }
+    }
+    return null;
+}
+
 // 顶点跨度的最大维度（km）：纬度 1°≈111km，经度乘以 cos(纬度) 修正。
 function spanKmOf(poly) {
     var b = L.latLngBounds(poly);
@@ -838,6 +865,9 @@ function polyAreaKm2(poly) {
 // 阈值都在 config.js（REGION_MIN_SPAN_KM / REGION_MIN_AREA_KM2 / REGION_MAX_SPAN_KM）
 function regionInvalidReason(poly) {
     if (!poly || poly.length < 3) return '至少需要 3 个顶点';
+    // 先查结构性问题：自相交（"8 字形"）的净面积常为 0，放到面积判定之后会误报成"共线"
+    var selfX = selfIntersectReason(poly);
+    if (selfX) return selfX + '，请把交叉处的顶点删掉重画';
     var km = spanKmOf(poly);
     if (km < CONFIG.REGION_MIN_SPAN_KM) return '范围过小（顶点几乎重合）';
     if (polyAreaKm2(poly) < CONFIG.REGION_MIN_AREA_KM2) {

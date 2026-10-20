@@ -46,8 +46,10 @@ var CONFIG = globalThis.__CONFIG;
 eval(
     extract(appSrc, 'spanKmOf') + '\n' +
     extract(appSrc, 'polyAreaKm2') + '\n' +
+    extract(appSrc, 'segCross') + '\n' +
+    extract(appSrc, 'selfIntersectReason') + '\n' +
     extract(appSrc, 'regionInvalidReason') + '\n' +
-    'globalThis.__geo = { spanKmOf: spanKmOf, polyAreaKm2: polyAreaKm2, regionInvalidReason: regionInvalidReason };'
+    'globalThis.__geo = { spanKmOf: spanKmOf, polyAreaKm2: polyAreaKm2, segCross: segCross, selfIntersectReason: selfIntersectReason, regionInvalidReason: regionInvalidReason };'
 );
 var geo = globalThis.__geo;
 
@@ -92,6 +94,25 @@ reasonIs(geo.regionInvalidReason([[31.000, 111.000], [31.010, 111.000], [31.000,
     '闭合处重复点的退化多边形应被拦截');
 reasonIs(geo.regionInvalidReason([[31.000, 111.000], [31.001, 111.001]]), '至少需要 3 个顶点',
     '少于 3 顶点应被拦截');
+
+// ---- 自相交（"8 字形"这类边穿过边）----
+var bowtie = [[31.000, 111.000], [31.020, 111.020], [31.020, 111.000], [31.000, 111.020]];
+reasonIs(geo.selfIntersectReason(bowtie), '自相交', '8 字形应检出自相交');
+reasonIs(geo.regionInvalidReason(bowtie), '自相交', '8 字形建区应被拦截');
+
+// 凹多边形（U 形）合法，不能误报
+var uShape = [[31.000, 111.000], [31.000, 111.020], [31.010, 111.020],
+    [31.010, 111.008], [31.020, 111.008], [31.020, 111.000]];
+ok(geo.selfIntersectReason(uShape) === null, 'U 形凹多边形不应误报自相交');
+ok(geo.regionInvalidReason(uShape) === null, 'U 形凹多边形应合规');
+
+// 相邻边共享端点、首尾边闭合，都不算自相交
+var triangle = [[31.000, 111.000], [31.000, 111.010], [31.010, 111.005]];
+ok(geo.selfIntersectReason(triangle) === null, '三角形不应自相交');
+
+// 共线（非严格相交）不判为自相交
+ok(geo.segCross([0, 0], [2, 0], [2, 0], [2, 2]) === false, '端点接触不算交叉');
+ok(geo.segCross([0, 0], [2, 2], [0, 2], [2, 0]) === true, '对角交叉应检出');
 
 // ---- 阈值来自 config，改配置即改判定 ----
 ok(CONFIG.REGION_MAX_SPAN_KM === 20, 'config 默认上限仍是 20km');
