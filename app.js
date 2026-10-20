@@ -514,55 +514,52 @@ function initMap() {
         map.invalidateSize();
         syncMapPan(); // 视口尺寸变了，缩放下限要重算
     });
-    map.on('zoomend', syncZoomFreeze);
-    syncZoomFreeze();
 }
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
 
-// 当前区域的瓦片边界：区域多边形外扩 VIEW.EXPAND。
-// 不再缓存视口——Leaflet 的 TileLayer.bounds 会在每个缩放级别自动重新筛选，
-// 平移/缩放后永远不会与实际视野脱节（此前“缩放反逻辑”的根因就是缓存了固定视口）。
-function regionTileBounds() {
-    if (!CONFIG.TILE_LIMIT_TO_REGION || !state.data || draw.active || addMode) return null;
+// 当前区域的外扩边界：区域多边形外扩 VIEW.EXPAND。
+// 用于：默认视野 / 缩放下限 / 平移硬墙 / 瓦片范围。
+function regionBounds() {
+    if (!state.data || draw.active || addMode) return null;
     var r = activeRegion();
     if (!r || !r.polygon || r.polygon.length < 3) return null;
     return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
 }
 
-// 平移硬边界 + 缩放下限：与瓦片边界同一来源（区域外扩），
+// 瓦片加载边界：默认不限制（跟随视口，缩小时不会留白）。
+// 仅当开启 TILE_LIMIT_TO_REGION 时按区域范围加载。
+// 不缓存视口：Leaflet 的 TileLayer.bounds 会在每个缩放级别自动重新筛选。
+function regionTileBounds() {
+    if (!CONFIG.TILE_LIMIT_TO_REGION) return null;
+    var b = regionBounds();
+    return b ? b.pad(2) : null;
+}
+
+// 平移硬边界 + 缩放下限：与区域边界同一来源（区域外扩）。
 // 无区域 / 绘制模式 / 放置模式时都解锁。
+// 平移边界比缩放下限所需范围再放宽一圈：最小缩放时视野可能比区域大，
+// 若边界仍锁在区域上，视野会超出边界，拖动会被反复弹回。
 function syncMapPan() {
     if (!map) return;
-    var b = regionTileBounds();
-    map.setMaxBounds(b); // 传 null/空边界时 Leaflet 自动解除限制
+    var b = regionBounds();
     if (b) {
+        // 平移硬墙比缩放下限所需范围再放宽两圈：
+        // 最小缩放时视野可能比区域大，边界太紧会让拖动被反复弹回。
+        var panB = b.pad(2);
+        map.setMaxBounds(panB);
         // 缩放下限 = 区域外扩范围恰好铺满视口的那一级：再缩小就看到区域外了。
         // 退化多边形（跨度为 0）会让 getBoundsZoom 返回异常值，这里兜底保护，
         // 否则 minZoom 可能被设成 maxZoom，缩放被锁死。
         var zMin = map.getBoundsZoom(b);
         if (isFinite(zMin)) map.setMinZoom(Math.min(zMin, CONFIG.MAX_ZOOM));
-        if (!b.contains(map.getCenter())) {
+        if (!panB.contains(map.getCenter())) {
             // 切到新区域时旧视野可能在新边界外：把中心拉回边界内
-            map.panInsideBounds(b, { animate: false });
+            map.panInsideBounds(panB, { animate: false });
         }
     } else {
+        map.setMaxBounds(null); // 空边界 = 解除限制
         map.setMinZoom(CONFIG.MIN_ZOOM);
-    }
-}
-
-// 到达最大缩放级即「定格」：禁用拖动/惯性，地图停在当前画面，不再因拖动发出新瓦片请求；
-// 缩小后自动恢复拖动。滚轮/缩放按钮仍可缩小， pinch 放大本身已被 maxZoom 封顶。
-function syncZoomFreeze() {
-    if (!map) return;
-    var hit = map.getZoom() >= CONFIG.MAX_ZOOM - 1e-9;
-    if (hit === state._zoomFrozen) return;
-    state._zoomFrozen = hit;
-    if (hit) {
-        map.dragging.disable();
-        toast('已到最大缩放：地图定格，缩小后恢复', 1800);
-    } else {
-        map.dragging.enable();
     }
 }
 
@@ -590,10 +587,11 @@ function syncTileBounds() {
     } else {
         key = r.id + '|' + r.polygon.length + '|' + r.polygon[0][0].toFixed(5) + ',' + r.polygon[0][1].toFixed(5);
     }
-    if (key === state._tileKey) return;
-    state._tileKey = key;
-    buildTiles();
-    syncMapPan();
+    if (key !== state._tileKey) {
+        state._tileKey = key;
+        buildTiles();
+    }
+    syncMapPan(); // 与瓦片重建解耦：平移/缩放限制每次都要按当前区域重算
 }
 
 function activeRegion() {
