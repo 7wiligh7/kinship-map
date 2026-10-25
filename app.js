@@ -260,21 +260,27 @@ function searchNewWsPlace() {
     var q = input.value.trim();
     if (!q) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="place-empty">搜索中…</div>';
-    geocode(q).then(function (list) {
+    geocode(q, showNewWsResults).then(function (list) {
         if (!list || !list.length) {
             box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」</div>';
             return;
         }
-        state._newWsPlaces = list;
-        box.innerHTML = list.map(function (r, i) {
-            return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
-                '<span class="place-name">' + esc(r.name) + '</span>' +
-                (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
-                '</div>';
-        }).join('');
-    }).catch(function () {
-        box.innerHTML = '<div class="place-empty">搜索失败：网络不可达<br>可在 config.js 填高德 key，或直接输入「纬度,经度」</div>';
+        showNewWsResults(list);
+    }).catch(function (e) {
+        box.innerHTML = '<div class="place-empty">搜索失败：' + esc(e.message || '网络不可达') +
+            '<br>国内搜索可进档案后在侧栏「⚙」填高德/天地图 key（免费），或直接输入「纬度,经度」</div>';
     });
+}
+
+function showNewWsResults(list) {
+    state._newWsPlaces = list;
+    document.getElementById('wsPlaceResults').innerHTML = list.map(function (r, i) {
+        return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
+            (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
+            '<span class="place-name">' + esc(r.name) + '</span>' +
+            (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
+            '</div>';
+    }).join('');
 }
 
 function pickNewWsPlace(i) {
@@ -918,62 +924,213 @@ function searchPlaces() {
     var box = document.getElementById('placeResults');
     if (!q) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="place-empty">搜索中…</div>';
-    geocode(q).then(function (list) {
+    geocode(q, showPlaceResults).then(function (list) {
         if (!list || !list.length) {
             box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」</div>';
             return;
         }
-        state._placeResults = list;
-        box.innerHTML = list.map(function (r, i) {
-            return '<div class="place-item" onclick="createRegionFromPlace(' + i + ')">' +
-                '<span class="place-name">' + esc(r.name) + '</span>' +
-                (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
-                '<button class="place-loc" onclick="event.stopPropagation(); flyToPlace(' + i + ')" title="只把地图定位过去，不建区域">定位</button>' +
-                '</div>';
-        }).join('');
-    }).catch(function () {
-        box.innerHTML = '<div class="place-empty">搜索失败：网络不可达<br>可在 config.js 填高德 key，或直接输入「纬度,经度」</div>';
+        showPlaceResults(list);
+    }).catch(function (e) {
+        box.innerHTML = '<div class="place-empty">搜索失败：' + esc(e.message || '网络不可达') +
+            '<br>国内搜索可点搜索框旁的「⚙」填高德/天地图 key（免费），或直接输入「纬度,经度」</div>';
     });
 }
 
-function geocode(q) {
-    var coords = parseCoords(q);
-    if (coords) {
+function showPlaceResults(list) {
+    state._placeResults = list;
+    document.getElementById('placeResults').innerHTML = list.map(function (r, i) {
+        return '<div class="place-item" onclick="createRegionFromPlace(' + i + ')">' +
+            (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
+            '<span class="place-name">' + esc(r.name) + '</span>' +
+            (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
+            '<button class="place-loc" onclick="event.stopPropagation(); flyToPlace(' + i + ')" title="只把地图定位过去，不建区域">定位</button>' +
+            '</div>';
+    }).join('');
+}
+
+/* 地名搜索：
+ * 1. 「纬度,经度」直输免网络；
+ * 2. 其余并行请求 CONFIG.GEOCODE.PROVIDERS 里的所有已配置源（填了 key 才算配置），
+ *    每个源出结果就合并渲染一次（快的源先显示），全部结束后 resolve 最终列表；
+ * 3. 串行 failover 的问题在于：国内 Esri 搜村名常「搜得出但不准」，会把后面更准的源挡住，
+ *    并行合并 + 相关度排序可以解决；总耗时约等于最慢的一个源。
+ */
+function geocode(q, onUpdate) {
+    var pc = Geocode.parseCoords(q);
+    if (pc) {
+        var lat = pc.lat, lng = pc.lng, addr = '';
+        if (pc.datum === 'gcj') {
+            var w = Geocode.gcj02ToWgs84(lng, lat);
+            lng = w[0]; lat = w[1];
+            addr = '高德/腾讯拾取坐标（GCJ-02 已自动纠偏）';
+        } else if (pc.datum === 'bd09') {
+            var g = Geocode.bd09ToGcj02(lng, lat);
+            var w2 = Geocode.gcj02ToWgs84(g[0], g[1]);
+            lng = w2[0]; lat = w2[1];
+            addr = '百度拾取坐标（BD-09 已自动纠偏）';
+        } else {
+            addr = pc.order === 'lnglat' ? '坐标（WGS-84，识别为「经度,纬度」顺序）' : '坐标点（免网络）';
+        }
         return Promise.resolve([{
-            name: coords[0].toFixed(5) + ', ' + coords[1].toFixed(5),
-            address: '坐标点（免网络）',
+            name: lat.toFixed(5) + ', ' + lng.toFixed(5),
+            address: addr,
             bbox: null,
-            lat: coords[0],
-            lng: coords[1]
+            lat: lat,
+            lng: lng,
+            src: '坐标'
         }]);
     }
     var list = providerList();
-    if (!list.length) return Promise.reject(new Error('no provider configured'));
-    var i = 0;
-    function next() {
-        if (i >= list.length) throw new Error('all providers failed');
-        var fn = list[i++];
-        return fn(q).then(function (res) {
-            return res && res.length ? res : next();
-        }, next);
+    if (!list.length) {
+        return Promise.reject(new Error('未配置可用搜索源：点侧栏搜索框旁的「⚙」填高德/天地图 key（免费）'));
     }
-    return next();
+    return new Promise(function (resolve, reject) {
+        var pending = list.length;
+        var groups = [];
+        var errs = [];
+        function publish() {
+            // 按配置顺序合并（而非完成顺序）：先返回的源不能霸占去重先手
+            var ordered = groups.slice().sort(function (a, b) { return a.idx - b.idx; });
+            var merged = Geocode.mergeGeoResults(q, ordered, (CONFIG.GEOCODE.LIMIT || 6) * 2);
+            if (onUpdate && merged.length) onUpdate(merged);
+            return merged;
+        }
+        list.forEach(function (p) {
+            p.fn(q).then(function (res) {
+                clearSourceFails(p.src);
+                if (res && res.length) groups.push({ src: p.src, list: res, idx: p.idx });
+                else errs.push(p.src + '：无结果');
+            }, function (e) {
+                noteSourceFail(p.src, e);
+                errs.push(p.src + '：' + (e && e.message ? e.message : '失败'));
+            }).then(function () {
+                pending--;
+                if (!pending) {
+                    if (!groups.length) reject(new Error(errs.join('；') || '全部搜索源无结果'));
+                    else resolve(publish());
+                } else if (groups.length) {
+                    publish();
+                }
+            });
+        });
+    });
 }
+
+var GEO_PROVIDERS = {
+    esri:      { src: 'Esri',  fn: geocodeEsri },
+    nominatim: { src: 'OSM',   fn: geocodeNominatim },
+    photon:    { src: 'Photon', fn: geocodePhoton },
+    amap:      { src: '高德',   fn: geocodeAmap, keyStore: 'amap' },
+    tianditu:  { src: '天地图', fn: geocodeTianditu, keyStore: 'tianditu' }
+};
 
 function providerList() {
-    var impls = { esri: geocodeEsri, nominatim: geocodeNominatim, amap: geocodeAmap };
     var names = (CONFIG.GEOCODE.PROVIDERS || ['esri']).slice();
-    if (CONFIG.GEOCODE.AMAP_KEY && names.indexOf('amap') < 0) names.push('amap');
-    return names.map(function (n) { return impls[n]; }).filter(Boolean);
+    // 填了 key（本机设置或 config.js）但没写进 PROVIDERS 的自动补到最前（兼容旧配置）
+    if (geoKey('amap') && names.indexOf('amap') < 0) names.unshift('amap');
+    if (geoKey('tianditu') && names.indexOf('tianditu') < 0) names.unshift('tianditu');
+    return names.map(function (n, i) {
+        var p = GEO_PROVIDERS[n];
+        if (!p) return null;
+        // idx = 配置顺序，合并去重时按它定优先级（完成顺序不可靠：慢的源未必准）
+        return { src: p.src, fn: p.fn, keyStore: p.keyStore, idx: i };
+    }).filter(Boolean).filter(function (p) {
+        if (p.keyStore && !geoKey(p.keyStore)) return false; // 没填 key 的源不参与
+        if (sourceUnreachable(p.src)) return false;          // 本会话连续失败被跳过的源不参与
+        return true;
+    });
 }
 
-function parseCoords(q) {
-    var m = String(q).match(/^\s*(-?\d+(?:\.\d+)?)\s*[,，\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
-    if (!m) return null;
-    var a = parseFloat(m[1]), b = parseFloat(m[2]);
-    if (isNaN(a) || isNaN(b)) return null;
-    if (Math.abs(a) > 90 || Math.abs(b) > 180) return null;
-    return [a, b];
+/* 国内网络下 nominatim 等源不可达，每次搜索都会白等一个超时。
+ * 同一源连续 2 次「超时/断网」类失败后，本会话内跳过该源；成功一次即恢复。刷新页面重置。 */
+function noteSourceFail(src, e) {
+    if (!e || (!e.timeout && !e.network)) return;
+    var m = state._geoFails || (state._geoFails = {});
+    m[src] = (m[src] || 0) + 1;
+}
+
+function clearSourceFails(src) {
+    if (state._geoFails) delete state._geoFails[src];
+}
+
+function sourceUnreachable(src) {
+    var m = state._geoFails || {};
+    return (m[src] || 0) >= 2;
+}
+
+/* ===== 搜索源 key：应用内设置（存本机 localStorage，优先于 config.js） ===== */
+
+var GEO_KEY_LS = { amap: 'kinmap_amap_key', tianditu: 'kinmap_tdt_key' };
+
+function geoKey(which) {
+    var v = '';
+    try { v = localStorage.getItem(GEO_KEY_LS[which]) || ''; } catch (e) {}
+    if (!v) v = which === 'amap' ? CONFIG.GEOCODE.AMAP_KEY : CONFIG.GEOCODE.TIANDITU_KEY;
+    return String(v || '').trim();
+}
+
+function saveGeoKeys() {
+    var a = document.getElementById('setAmapKey');
+    var t = document.getElementById('setTdtKey');
+    if (!a || !t) return;
+    try {
+        var av = a.value.trim(), tv = t.value.trim();
+        if (av) localStorage.setItem(GEO_KEY_LS.amap, av); else localStorage.removeItem(GEO_KEY_LS.amap);
+        if (tv) localStorage.setItem(GEO_KEY_LS.tianditu, tv); else localStorage.removeItem(GEO_KEY_LS.tianditu);
+    } catch (e) {}
+    state._geoFails = {}; // key 变了，旧失败计数作废
+    toast('已保存（只存本浏览器）');
+}
+
+function clearGeoKeys() {
+    try {
+        localStorage.removeItem(GEO_KEY_LS.amap);
+        localStorage.removeItem(GEO_KEY_LS.tianditu);
+    } catch (e) {}
+    state._geoFails = {};
+    toast('已清除本机 key（config.js 里填的仍生效）');
+}
+
+function openKeySettings(msgHtml) {
+    showDialog({
+        title: '地名搜索源设置',
+        body:
+            '<div class="dialog-note">国内搜村/镇名，填一个 key 即可（个人免费）。<br>' +
+            '<b>高德</b>（推荐，村镇 POI 覆盖最好）：console.amap.com → 创建应用 → 添加 Key → 服务平台选「Web服务」<br>' +
+            '<b>天地图</b>（官方）：console.tianditu.gov.cn → 创建应用 → 类型选「浏览器端」<br>' +
+            'key 只存本浏览器 localStorage，不上传。</div>' +
+            '<div class="form-group"><label class="label">高德 key（Web服务类型）</label>' +
+            '<input class="input" id="setAmapKey" maxlength="64" autocomplete="off" placeholder="留空则用 config.js 里的" value="' + esc(geoKey('amap')) + '" /></div>' +
+            '<div class="form-group"><label class="label">天地图 tk（浏览器端类型）</label>' +
+            '<input class="input" id="setTdtKey" maxlength="64" autocomplete="off" placeholder="留空则用 config.js 里的" value="' + esc(geoKey('tianditu')) + '" /></div>' +
+            (msgHtml ? '<div class="key-test-msg">' + msgHtml + '</div>' : ''),
+        buttons: [
+            { label: '清除本机保存', onClick: clearGeoKeys },
+            { label: '保存', cls: 'primary', onClick: saveGeoKeys },
+            { label: '保存并测试', onClick: saveAndTestKeys }
+        ]
+    });
+}
+
+function saveAndTestKeys() {
+    saveGeoKeys();
+    var amapKey = geoKey('amap'), tdtKey = geoKey('tianditu');
+    if (!amapKey && !tdtKey) { openKeySettings('请先至少填一个 key'); return; }
+    openKeySettings('测试中…');
+    var jobs = [];
+    if (amapKey) {
+        jobs.push(geocodeAmap('北京市').then(
+            function (l) { return '高德：✓ 可用（「北京市」返回 ' + l.length + ' 条）'; },
+            function (e) { return '高德：✗ ' + (e && e.message ? e.message : '失败'); }));
+    }
+    if (tdtKey) {
+        jobs.push(geocodeTianditu('北京市').then(
+            function (l) { return '天地图：✓ 可用（返回 ' + l.length + ' 条）'; },
+            function (e) { return '天地图：✗ ' + (e && e.message ? e.message : '失败'); }));
+    }
+    Promise.all(jobs).then(function (lines) {
+        openKeySettings('测试结果：<br>' + lines.map(esc).join('<br>'));
+    });
 }
 
 function fetchJson(url) {
@@ -987,8 +1144,24 @@ function fetchJson(url) {
         return res.json();
     }, function (e) {
         done();
-        throw e;
+        throw markFetchError(e);
     });
+}
+
+// 标记「不可达」类错误（超时 / 断网）：这类错误会计入跳过统计（见 noteSourceFail）。
+// 注意不能改写 DOMException 的 message（只读），要换成新 Error。
+function markFetchError(e) {
+    if (e && e.name === 'AbortError') {
+        var t = new Error('请求超时');
+        t.timeout = true;
+        return t;
+    }
+    if (e instanceof TypeError) {
+        var n = new Error('网络不可达');
+        n.network = true;
+        return n;
+    }
+    return e;
 }
 
 function geocodeEsri(q) {
@@ -1039,15 +1212,33 @@ function geocodeNominatim(q) {
     });
 }
 
+var AMAP_ERR_TEXT = {
+    INVALID_USER_KEY: 'key 无效（REST 接口需「Web服务」类型 key）',
+    USERKEY_PLAT_NOMATCH: 'key 服务类型不对（需「Web服务」）',
+    USER_DAILY_QUERY_OVER_LIMIT: 'key 今日配额已用完',
+    DAILY_QUERY_OVER_LIMIT: 'key 今日配额已用完',
+    NOT_SUPPORT_HTTPS: '该 key 不支持 https 调用'
+};
+
+function amapError(j) {
+    var info = j && j.info ? String(j.info) : '接口异常';
+    // 不带「高德：」前缀：调用处（errs.push / 测试行）已拼接来源名
+    return new Error(AMAP_ERR_TEXT[info] || info);
+}
+
+// 高德 POI 文本搜索。GCJ-02 返回，转 WGS-84 与底图对齐（见 geocode.js）
 function geocodeAmap(q) {
-    var url = 'https://restapi.amap.com/v3/place/text?key=' + encodeURIComponent(CONFIG.GEOCODE.AMAP_KEY) +
+    var key = geoKey('amap');
+    if (!key) return Promise.reject(new Error('未配置高德 key'));
+    var url = 'https://restapi.amap.com/v3/place/text?key=' + encodeURIComponent(key) +
         '&keywords=' + encodeURIComponent(q) +
         '&offset=' + (CONFIG.GEOCODE.LIMIT || 6) + '&page=1&extensions=base';
     return fetchJson(url).then(function (j) {
-        return (j.pois || []).map(function (p) {
+        if (String(j.status) !== '1') throw amapError(j);
+        var list = (j.pois || []).map(function (p) {
             var loc = String(p.location || '').split(',');
-            if (loc.length !== 2) return null;
-            var wgs = gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
+            if (loc.length !== 2 || !loc[0]) return null;
+            var wgs = Geocode.gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
             return {
                 name: p.name || q,
                 address: (p.pname || '') + (p.cityname || '') + (p.adname || '') + (p.address || ''),
@@ -1056,56 +1247,97 @@ function geocodeAmap(q) {
                 lng: wgs[0]
             };
         }).filter(Boolean);
+        if (list.length) return list;
+        // POI 没搜到（部分自然村/组未收录）→ 退回行政区划地理编码，至少定位到所属市县镇
+        return geocodeAmapDistrict(q, key);
     });
 }
 
-/* GCJ-02（高德/腾讯）↔ WGS-84（Esri 底图），迭代反算 */
-
-var GCJ_A = 6378245.0;
-var GCJ_EE = 0.00669342162296594323;
-
-function gcjOutOfChina(lng, lat) {
-    return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271;
+function geocodeAmapDistrict(q, key) {
+    var url = 'https://restapi.amap.com/v3/geocode/geo?key=' + encodeURIComponent(key) +
+        '&address=' + encodeURIComponent(q) + '&multiResult=true';
+    return fetchJson(url).then(function (j) {
+        if (String(j.status) !== '1') return [];
+        return (j.geocodes || []).map(function (g) {
+            var loc = String(g.location || '').split(',');
+            if (loc.length !== 2 || !loc[0]) return null;
+            var wgs = Geocode.gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
+            return {
+                name: g.district || q,
+                address: (g.formatted_address || '') + (g.level ? '（' + g.level + '）' : ''),
+                bbox: null,
+                lat: wgs[1],
+                lng: wgs[0]
+            };
+        }).filter(Boolean);
+    });
 }
 
-function gcjTransformLat(x, y) {
-    var r = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    r += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
-    r += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
-    return r;
+var PHOTON_KIND = {
+    village: '村', hamlet: '自然村', town: '镇', city: '市', county: '县',
+    district: '区', municipality: '直辖市', state: '省', country: '国家',
+    house: '门牌', street: '道路', locality: '地名', farm: '农场'
+};
+
+// Photon：OSM 数据的免 key 检索（photon.komoot.io 公共实例）。
+// 免注册免 key、大陆可达性实测较好；数据来自 OSM，村名覆盖不如高德全，作为免 key 方案。
+// 返回即 WGS-84，免纠偏。
+function geocodePhoton(q) {
+    var c = map ? map.getCenter() : L.latLng(CONFIG.CENTER[0], CONFIG.CENTER[1]);
+    var url = 'https://photon.komoot.io/api?q=' + encodeURIComponent(q) +
+        '&limit=' + (CONFIG.GEOCODE.LIMIT || 6) +
+        '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4);
+    return fetchJson(url).then(function (j) {
+        return (j.features || []).map(function (f) {
+            var p = f.properties || {};
+            var g = f.geometry && f.geometry.coordinates;
+            if (!g || g.length !== 2 || typeof g[0] !== 'number') return null;
+            var parts = [p.country, p.state, p.city, p.county, p.district];
+            var seen = {}, addr = [];
+            parts.forEach(function (x) {
+                if (!x || seen[x] || x === p.name) return; // 去重、避免与名称重复
+                seen[x] = true;
+                addr.push(x);
+            });
+            var kind = PHOTON_KIND[p.osm_value] || p.osm_value || '';
+            return {
+                name: p.name || q,
+                address: addr.join(' ') + (kind ? '（' + kind + '）' : ''),
+                bbox: p.extent ? { west: p.extent[0], north: p.extent[1], east: p.extent[2], south: p.extent[3] } : null,
+                lat: g[1],
+                lng: g[0]
+            };
+        }).filter(Boolean);
+    });
 }
 
-function gcjTransformLng(x, y) {
-    var r = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    r += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
-    r += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
-    return r;
-}
-
-function wgs84ToGcj02(lng, lat) {
-    if (gcjOutOfChina(lng, lat)) return [lng, lat];
-    var dLat = gcjTransformLat(lng - 105.0, lat - 35.0);
-    var dLng = gcjTransformLng(lng - 105.0, lat - 35.0);
-    var radLat = lat / 180.0 * Math.PI;
-    var magic = Math.sin(radLat);
-    magic = 1 - GCJ_EE * magic * magic;
-    var sqrtMagic = Math.sqrt(magic);
-    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
-    dLng = (dLng * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
-    return [lng + dLng, lat + dLat];
-}
-
-function gcj02ToWgs84(lng, lat) {
-    if (gcjOutOfChina(lng, lat)) return [lng, lat];
-    var w = [lng, lat];
-    for (var i = 0; i < 5; i++) {
-        var g = wgs84ToGcj02(w[0], w[1]);
-        w[0] += lng - g[0];
-        w[1] += lat - g[1];
-    }
-    return w;
+// 天地图地理编码（国内官方服务，免费 tk；直接返回 WGS-84，免纠偏）。单结果接口，作补充源。
+function geocodeTianditu(q) {
+    var key = geoKey('tianditu');
+    if (!key) return Promise.reject(new Error('未配置天地图 tk'));
+    var ds = JSON.stringify({ keyWord: q });
+    var url = 'https://api.tianditu.gov.cn/geocoder?ds=' + encodeURIComponent(ds) +
+        '&tk=' + encodeURIComponent(key);
+    return fetchJson(url).catch(function (e) {
+        // 天地图对无效 tk 返回 HTTP 400，给出可操作的提示
+        if (/^HTTP 40\d$/.test(e && e.message ? e.message : '')) {
+            throw new Error('tk 无效（需「浏览器端」类型）');
+        }
+        throw e;
+    }).then(function (j) {
+        var loc = j && j.location;
+        if (!loc || typeof loc.lon !== 'number' || typeof loc.lat !== 'number') {
+            throw new Error('无匹配结果');
+        }
+        var score = j.score != null && !isNaN(+j.score) ? '，置信度 ' + Math.round(+j.score * 100) + '%' : '';
+        return [{
+            name: q,
+            address: '天地图匹配' + score,
+            bbox: null,
+            lat: loc.lat,
+            lng: loc.lon
+        }];
+    });
 }
 
 function bboxPolygon(b) {

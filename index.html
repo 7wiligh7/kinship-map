@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>亲属关系地图</title>
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.15" />
+    <link rel="stylesheet" href="style.css?v=1.21" />
     <script src="vendor/leaflet/leaflet.js"></script>
 </head>
 <body>
@@ -85,8 +85,9 @@
                 <div class="region-current" id="regionCurrent">未划定</div>
                 <div class="region-list" id="regionList"></div>
                 <div class="place-search">
-                    <input class="place-input" id="placeInput" placeholder="地名，或「纬度,经度」" onkeydown="if (event.key === 'Enter') searchPlaces()" />
+                    <input class="place-input" id="placeInput" placeholder="地名 / 纬度,经度 / 粘贴拾取坐标" onkeydown="if (event.key === 'Enter') searchPlaces()" />
                     <button class="place-btn" onclick="searchPlaces()">搜索</button>
+                    <button class="place-btn key-btn" onclick="openKeySettings()" title="搜索源设置（高德/天地图 key，免费）">⚙</button>
                 </div>
                 <div class="place-results" id="placeResults"></div>
                 <button class="region-add" onclick="startDrawRegion()">＋ 地图上框选新区域</button>
@@ -120,7 +121,7 @@
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.0</span>
+                <span class="version">v2.3</span>
             </div>
         </div>
 
@@ -239,8 +240,9 @@
         <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="handleImport(this)" />
     </div>
 
-    <script src="config.js?v=1.18"></script>
+    <script src="config.js?v=1.21"></script>
+    <script src="geocode.js?v=1.21"></script>
     <script src="kinship.js"></script>
-    <script src="app.js?v=1.18"></script>
+    <script src="app.js?v=1.21"></script>
 </body>
 </html>

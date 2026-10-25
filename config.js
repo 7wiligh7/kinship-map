@@ -46,14 +46,26 @@ var CONFIG = {
   TILE_LIMIT_TO_REGION: false,
 
   // 地名搜索（用搜索结果新建区域）
-  // PROVIDERS: 按顺序尝试，全部失败才报错
-  //   esri      免 key，WGS84，与底图同源（海外/部分国内网络可达）
-  //   nominatim 免 key，WGS84（OSM；大陆通常不可达）
-  //   amap      需 KEY，GCJ-02 → 自动转 WGS84（大陆推荐）
-  // 也可直接在搜索框输入 "纬度,经度"（如 31.0,111.0）免网络建区域
+  // 并行请求下列所有「已配置」的源（没填 key 的国内源自动跳过），合并去重、按相关度排序。
+  // 国内村镇级搜索推荐填高德或天地图 key（个人均免费，应用内 ⚙ 即可填）：
+  //   高德：https://console.amap.com 注册 → 创建应用 → 添加 Key → 服务平台选「Web服务」→ 复制 key
+  //   天地图：https://console.tianditu.gov.cn 注册 → 创建应用 → 类型「浏览器端」→ 复制 tk
+  //   amap      高德 POI，GCJ-02 → 自动转 WGS84，国内村/镇覆盖最好（需 KEY）
+  //   tianditu  天地图地理编码，WGS84 免纠偏，国内官方服务（需 KEY）
+  //   photon    Photon（OSM 数据），免 key 免注册，大陆可达性实测较好，
+  //             村名覆盖不如高德全，作为「不接入」方案；WGS84 免纠偏
+  //   esri      免 key，WGS84，与底图同源；国内村镇覆盖差（常返回拼音/不准结果），作兜底
+  //   nominatim 免 key，WGS84（OSM；大陆通常不可达，连续失败会自动跳过；海外可用）
+  // 不接入任何 key 也能用的两条路：
+  //   1) photon 源（上面的默认顺序已启用，搜不到时说明 OSM 未收录该村名）
+  //   2) 高德官方「坐标拾取器」（lbs.amap.com/tools/picker，免费网页免注册）搜地名 →
+  //      复制坐标 → 粘贴到搜索框，自动识别 GCJ-02 并纠偏；百度拾取器粘贴加前缀 b:，
+  //      GPS 原始坐标强制不纠偏加前缀 w:
+  // 也可直接输入 "纬度,经度"（WGS-84，旧行为不变）
   GEOCODE: {
-    PROVIDERS: ['esri', 'nominatim'],
+    PROVIDERS: ['amap', 'tianditu', 'photon', 'esri', 'nominatim'],
     AMAP_KEY: '',
+    TIANDITU_KEY: '',
     LIMIT: 6,
     LANGUAGE: 'zh-CN',
     EMAIL: '',
