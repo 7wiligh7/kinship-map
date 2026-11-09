@@ -831,6 +831,27 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Micr
 }
 .region-add:hover { background: #fff8e1; border-color: #ffb300; }
 
+/* 「缓存本区离线图」：比建区按钮弱一档 */
+.offline-add {
+    margin-top: 6px;
+    border-color: #cfe3d0;
+    color: #2e7d32;
+    font-size: 12px;
+    padding: 6px;
+}
+.offline-add:hover { background: #f1f8f1; border-color: #2e7d32; }
+
+/* 离线包进度 */
+.offline-prog { font-size: 13px; color: #555; line-height: 1.7; }
+.offline-bar {
+    height: 6px;
+    background: #eee;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+.offline-bar > i { display: block; height: 100%; width: 0; background: #ffb300; transition: width .2s; }
+
 /* ===== place search ===== */
 .place-search { display: flex; gap: 6px; margin-bottom: 8px; }
 
@@ -914,17 +935,50 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Micr
     background: #fafafa;
 }
 
-.place-loc {
-    margin-top: 5px;
-    padding: 2px 10px;
-    font-size: 11px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: #f7f7f7;
+/* 搜索失败时的操作卡：给能立刻用的出口，而不是甩超时信息 */
+.place-error {
+    border: 1px solid #ffe0b2;
+    background: #fffdf7;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 6px;
+}
+.place-error-title { font-size: 13px; font-weight: 600; color: #b26a00; }
+.place-error-detail { font-size: 12px; color: #777; line-height: 1.6; margin-top: 4px; }
+.place-error-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.place-act {
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 12px;
+    border: 1px solid #e0e0e0;
+    background: #fff;
     color: #555;
     cursor: pointer;
 }
-.place-loc:hover { border-color: #2e7d32; color: #2e7d32; background: #f1f8f1; }
+.place-act:hover { border-color: #ffb300; color: #b26a00; background: #fff8e1; }
+.place-act.primary { background: #ffb300; border-color: #ffb300; color: #fff; }
+.place-act.primary:hover { background: #ffa000; border-color: #ffa000; color: #fff; }
+.place-error-foot { font-size: 11px; color: #aaa; margin-top: 6px; }
+
+.map-region-label {
+    display: inline-block;
+    transform: translate(-50%, -50%);
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 0 6px;
+    border-radius: 9px;
+    color: #888;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid #ddd;
+    white-space: nowrap;
+    pointer-events: none;
+}
+.map-region-label.active {
+    color: #4a7ebb;
+    border-color: #c7d8ea;
+    background: rgba(250, 252, 255, 0.9);
+}
+
 
 /* 建档表单：位置搜索 */
 .ws-place-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
