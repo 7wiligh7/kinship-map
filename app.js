@@ -359,6 +359,32 @@ function deleteWorkspace(id) {
     toast('已删除档案');
 }
 
+// 切换档案：把上一个档案的瞬时状态清干净，避免痕迹带进新档案
+function resetWorkspaceUI() {
+    // 人名搜索：输入框 + 下拉结果
+    var box = document.getElementById('searchResults');
+    if (box) { box.classList.remove('show'); box.innerHTML = ''; }
+    var si = document.getElementById('searchInput');
+    if (si) si.value = '';
+    // 地名搜索：输入框 + 结果 + 结果缓存（否则点旧结果会飞到上一个档案的位置）
+    var pi = document.getElementById('placeInput');
+    if (pi) pi.value = '';
+    var pr = document.getElementById('placeResults');
+    if (pr) pr.innerHTML = '';
+    state._placeResults = null;
+    // 上一个档案的人物信息卡 / 选中态 / 关系表单
+    closeInfoCard();
+    hideRelForm();
+    state.selectedId = null;
+    state.editingId = null;
+    hideContextMenu();
+    // 上一个档案没走完的交互（添加人物、框选区域、待放置的人物草稿）
+    addMode = false;
+    pendingLatLng = null;
+    pendingDraft = null;
+    if (draw.active) cleanupDraw();
+}
+
 function enterWorkspace(id) {
     var list = getWsList();
     var ws = list.filter(function (w) { return w.id === id; })[0];
@@ -367,6 +393,7 @@ function enterWorkspace(id) {
     state.workspace = ws;
     state.isDemo = !!ws.demo;
     state.data = loadWs(id) || freshV3();
+    resetWorkspaceUI();
     document.getElementById('startup').classList.add('hidden');
     document.getElementById('wsBarEmoji').textContent = ws.emoji || '🏡';
     document.getElementById('wsBarName').textContent = ws.name;
@@ -463,9 +490,12 @@ function normalizeData(d) {
     }).map(function (r) {
         return { id: String(r.id), name: typeof r.name === 'string' && r.name ? r.name : '未命名区域', polygon: r.polygon };
     });
-    if (!d.regions.length && d.persons.length) {
+    if (!d.regions.length && d.persons.length && d.regionsCleared !== true) {
+        // 旧格式（v1/v2 导入）没有区域字段，按人物位置补一个默认区域；
+        // v3 里用户手动删光区域时会置 regionsCleared=true，这里不能再"长"回去。
         d.regions = [synthRegion(d.persons)];
     }
+    d.regionsCleared = d.regions.length === 0 && d.regionsCleared === true;
     var rids = {};
     d.regions.forEach(function (r) { rids[r.id] = true; });
     var fallbackRid = d.activeRegionId && rids[d.activeRegionId] ? d.activeRegionId : (d.regions[0] ? d.regions[0].id : null);
@@ -1113,7 +1143,7 @@ function renderRegions() {
     list.innerHTML = (state.data ? state.data.regions : []).map(function (r) {
         return '<div class="region-item' + (r.id === state.data.activeRegionId ? ' active' : '') + '" onclick="switchRegion(\'' + esc(r.id) + '\')">' +
             '<span class="region-item-name">' + esc(r.name) + '</span>' +
-            (state.data.regions.length > 1 ? '<button class="region-item-del" title="删除区域" onclick="event.stopPropagation(); deleteRegion(\'' + esc(r.id) + '\')">✕</button>' : '') +
+            '<button class="region-item-del" title="删除区域" onclick="event.stopPropagation(); deleteRegion(\'' + esc(r.id) + '\')">✕</button>' +
             '</div>';
     }).join('');
     if (state.regionLayer) {
@@ -1158,21 +1188,27 @@ function switchRegion(id) {
 }
 
 function deleteRegion(id) {
-    if (state.data.regions.length <= 1) { toast('至少保留一个区域'); return; }
     var r = state.data.regions.filter(function (x) { return x.id === id; })[0];
     if (!r) return;
-    if (!confirm('删除区域「' + r.name + '」？区域内的人物将归入其他区域。')) return;
+    var isLast = state.data.regions.length === 1;
+    if (!confirm(isLast
+        ? '删除区域「' + r.name + '」？这是最后一个区域：删除后地图上不再显示区域框，人物仍保留在档案里，随时可以重新框选。'
+        : '删除区域「' + r.name + '」？区域内的人物将归入其他区域。')) return;
     state.data.regions = state.data.regions.filter(function (x) { return x.id !== id; });
-    var newActive = state.data.activeRegionId === id ? state.data.regions[0].id : state.data.activeRegionId;
+    var newActive = state.data.activeRegionId === id
+        ? (state.data.regions[0] ? state.data.regions[0].id : null)
+        : state.data.activeRegionId;
     state.data.persons.forEach(function (p) {
         if (p.regionId === id) p.regionId = newActive;
     });
     state.data.activeRegionId = newActive;
+    // 最后一个区域删完要留痕：否则重开页面时 normalizeData 会按人物位置自动"长"回一个区域
+    state.data.regionsCleared = state.data.regions.length === 0;
     saveData();
     renderRegions();
     renderAll(false);
     fitActiveRegion();
-    toast('已删除区域');
+    toast(isLast ? '已删除区域（地图上已无区域框）' : '已删除区域');
 }
 
 function startDrawRegion() {
@@ -1274,6 +1310,7 @@ function createRegion(name, verts) {
     cleanupDraw();
     state.data.regions.push(region);
     state.data.activeRegionId = region.id;
+    state.data.regionsCleared = false; /* 重新框了区域，撤销"已删光区域"标记 */
     saveData();
     renderRegions();
     fitRegion(region);
@@ -2327,7 +2364,7 @@ function saveRelation() {
 
 function exportData() {
     if (!state.data) return;
-    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId };
+    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, regionsCleared: state.data.regionsCleared === true, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -2559,8 +2596,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.37';
-        console.info('[kinmap] build 1.37 · 搜索只定位（点结果只移动地图，不建区）');
+        document.title = '亲属关系地图 · 构建 1.38';
+        console.info('[kinmap] build 1.38 · 切档清搜索 + 可删除最后一个区域');
     } catch (e) {}
 }
 
