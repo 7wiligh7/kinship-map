@@ -117,7 +117,15 @@
     '舅舅|儿子': function (n) { return gendered(n, '表兄弟', '表姐妹', '表兄弟/表姐妹'); },
     '舅舅|女儿': function (n) { return gendered(n, '表兄弟', '表姐妹', '表兄弟/表姐妹'); },
     '姨妈|儿子': function (n) { return gendered(n, '表兄弟', '表姐妹', '表兄弟/表姐妹'); },
-    '姨妈|女儿': function (n) { return gendered(n, '表兄弟', '表姐妹', '表兄弟/表姐妹'); }
+    '姨妈|女儿': function (n) { return gendered(n, '表兄弟', '表姐妹', '表兄弟/表姐妹'); },
+    '堂兄弟|儿子': function (n) { return gendered(n, '堂侄', '堂侄女', '堂侄/堂侄女'); },
+    '堂兄弟|女儿': function (n) { return gendered(n, '堂侄', '堂侄女', '堂侄/堂侄女'); },
+    '爷爷|哥哥': '伯祖',
+    '爷爷|弟弟': '叔祖',
+    '伯祖|儿子': function (n) { return gendered(n, '堂叔', '堂姑', '堂叔/堂姑'); },
+    '伯祖|女儿': function (n) { return gendered(n, '堂叔', '堂姑', '堂叔/堂姑'); },
+    '叔祖|儿子': function (n) { return gendered(n, '堂叔', '堂姑', '堂叔/堂姑'); },
+    '叔祖|女儿': function (n) { return gendered(n, '堂叔', '堂姑', '堂叔/堂姑'); }
   };
 
   var INV = {
@@ -256,12 +264,34 @@
     return '';
   }
 
+  // 双向称谓换算：iCall = root 对 other 的称呼（root 视角），theyCall = other 对 root 的称呼。
+  // 两个方向各自独立跑一次 BFS 最短链，间接（多级关系链）人物同样适用；
+  // 未连通或 id 未标记时对应方向为 null。genDiff = other 相对 root 的辈分代差：
+  // 正数 = other 低 root 几辈（孙辈方向），负数 = other 高 root 几辈（父辈/祖辈方向），
+  // 双方未连通时为 null。用于「年龄相近但辈分不同」时明确称呼归属。
+  function mutual(rootId, otherId, persons, relations) {
+    if (!rootId || !otherId) return { iCall: null, theyCall: null, genDiff: null };
+    if (rootId === otherId) {
+      var self = { label: '我', exact: true, path: [], gen: 0, key: '我' };
+      return { iCall: self, theyCall: self, genDiff: 0 };
+    }
+    var fwd = compute(rootId, persons, relations);
+    var rev = compute(otherId, persons, relations);
+    var iCall = fwd.labels[otherId] || null;
+    return {
+      iCall: iCall,
+      theyCall: rev.labels[rootId] || null,
+      genDiff: iCall ? iCall.gen : null
+    };
+  }
+
   global.Kinship = {
     TYPE_GROUPS: TYPE_GROUPS,
     typeGroup: typeGroup,
     delta: delta,
     compute: compute,
     computePathEdges: computePathEdges,
-    displayTitle: displayTitle
+    displayTitle: displayTitle,
+    mutual: mutual
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -2265,6 +2265,7 @@ function openInfoCard(id) {
     if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
     if (p.titles.length) bits.push('手填称谓：' + p.titles.join('、'));
     document.getElementById('infoTitles').textContent = bits.join('　');
+    renderMutualTitles(id, lab);
     renderRelList(id);
     document.getElementById('relForm').classList.remove('show');
     document.getElementById('infoCard').classList.add('show');
@@ -2272,6 +2273,55 @@ function openInfoCard(id) {
 
 function closeInfoCard() {
     document.getElementById('infoCard').classList.remove('show');
+}
+
+/* ===== 双向称谓换算（信息卡）：处「同龄不同辈」时称呼最易搞错，这里一次给两个方向 ===== */
+
+// 同年龄段判定阈值：两人年龄差这么多岁以内算「同年龄段」，辈分却不同时给出特别提示
+var KIN_CLOSE_AGE = 10;
+
+function renderMutualTitles(id, fwdLab) {
+    var box = document.getElementById('infoMutual');
+    if (!box) return;
+    box.classList.remove('show');
+    if (!state.data || !state.data.rootId || id === state.data.rootId) return;
+    var m = null;
+    try {
+        m = Kinship.mutual(state.data.rootId, id, state.data.persons, state.data.relations);
+    } catch (e) { m = null; }
+    if (!m || (!m.iCall && !m.theyCall)) return; // 未连进「我」的关系网：无换算可给
+
+    var p = findPerson(id);
+    var me = findPerson(state.data.rootId);
+    var he = p && p.gender === 'f' ? '她' : '他';
+
+    function val(lab) {
+        if (!lab) return '<span class="kin-none">没有到「我」的称呼链，先补一条关系</span>';
+        return '<span class="kin-val' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>';
+    }
+
+    var html =
+        '<div class="kin-mutual-title">称谓换算' + (fwdLab && fwdLab.exact ? '' : '（按最短关系链推算）') + '</div>' +
+        '<div class="kin-mutual-row"><span class="kin-who">我 → ' + he + '</span>' + val(m.iCall) + '</div>' +
+        '<div class="kin-mutual-row"><span class="kin-who">' + he + ' → 我</span>' + val(m.theyCall) + '</div>';
+
+    // 辈分差 + 同龄不同辈提示：称呼看辈分不看年龄
+    var g = m.genDiff;
+    if (g !== null && g !== 0) {
+        html += '<div class="kin-gen">辈分：' + (g < 0 ? he + '高我 ' + (-g) + ' 辈' : he + '低我 ' + g + ' 辈') + '</div>';
+        var bothAged = me && p && typeof me.age === 'number' && typeof p.age === 'number';
+        if (bothAged) {
+            var gap = Math.abs(me.age - p.age);
+            if (gap <= KIN_CLOSE_AGE) {
+                var verdict = g < 0
+                    ? '我年纪' + (me.age <= p.age ? '更大' : '相仿') + '也照样叫' + he + '「' + esc(m.iCall ? m.iCall.label : '') + '」'
+                    : he + '年纪' + (p.age <= me.age ? '更大' : '相仿') + '也要叫我「' + esc(m.theyCall ? m.theyCall.label : '') + '」';
+                html += '<div class="kin-mutual-note">⚠ 同年龄段不同辈：差 ' + gap + ' 岁但差 ' + Math.abs(g) + ' 辈。称呼以辈分为准——' + verdict + '</div>';
+            }
+        }
+    }
+    box.innerHTML = html;
+    box.classList.add('show');
 }
 
 function editFromCard() {
@@ -2596,8 +2646,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.38';
-        console.info('[kinmap] build 1.38 · 切档清搜索 + 可删除最后一个区域');
+        document.title = '亲属关系地图 · 构建 1.39';
+        console.info('[kinmap] build 1.39 · 称谓双向换算（同龄不同辈也有明确称呼）');
     } catch (e) {}
 }
 

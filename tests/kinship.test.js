@@ -123,5 +123,95 @@ eq(K.typeGroup['伯父'], '父辈', 'typeGroup 伯父 -> 父辈');
 eq(K.typeGroup['外婆'], '祖辈', 'typeGroup 外婆 -> 祖辈');
 eq(Array.isArray(K.TYPE_GROUPS) && K.TYPE_GROUPS.length >= 5, true, 'TYPE_GROUPS has >=5 groups');
 
+/* ===== mutual 双向称谓换算（同龄不同辈场景的核心） ===== */
+
+// 基础家族：我 + 爸 + 伯父(爸的哥哥) + 堂哥(伯父的儿子)
+var MP = [
+    { id: 'me', gender: 'm' },
+    { id: 'fa', gender: 'm' },
+    { id: 'bo', gender: 'm' },
+    { id: 'tg', gender: 'm' }
+];
+var MR = [
+    { from: 'fa', to: 'me', type: '父亲' },
+    { from: 'bo', to: 'fa', type: '哥哥' },
+    { from: 'tg', to: 'bo', type: '儿子' }
+];
+
+// 直系：我 → 爸，爸 → 我（性别联动）
+var x1 = K.mutual('me', 'fa', MP, MR);
+eq(x1.iCall.label, '父亲', 'mutual 直系 我→爸');
+eq(x1.iCall.exact, true, 'mutual 直系 exact');
+eq(x1.theyCall.label, '儿子', 'mutual 直系 爸→我(男)');
+eq(x1.genDiff, -1, 'mutual 直系 genDiff -1');
+
+// 一级间接：伯父 ↔ 我
+var x2 = K.mutual('me', 'bo', MP, MR);
+eq(x2.iCall.label, '伯父', 'mutual 一级间接 我→伯父');
+eq(x2.theyCall.label, '侄子', 'mutual 伯父→我(男)');
+eq(x2.genDiff, -1, 'mutual 伯父 genDiff -1');
+
+// 两级间接（间接链路的双向都精确）：堂哥 ↔ 我
+var x3 = K.mutual('me', 'tg', MP, MR);
+eq(x3.iCall.label, '堂兄弟', 'mutual 两级间接 我→堂哥');
+eq(x3.theyCall.label, '堂兄弟', 'mutual 堂哥→我');
+eq(x3.genDiff, 0, 'mutual 堂哥 同辈 genDiff 0');
+
+// === 用户场景：老来得子的弟弟——我和小叔年龄相仿（差 2 岁），辈分差一辈 ===
+var SP = [
+    { id: 'me', gender: 'm', age: 30 },
+    { id: 'fa', gender: 'm', age: 60 },
+    { id: 'sh', gender: 'm', age: 28 } // fa 的幼弟，只比我大两岁
+];
+var SR = [
+    { from: 'fa', to: 'me', type: '父亲' },
+    { from: 'sh', to: 'fa', type: '弟弟' }
+];
+var x4 = K.mutual('me', 'sh', SP, SR);
+eq(x4.iCall.label, '叔父', '同年龄段长辈 我→小叔 = 叔父');
+eq(x4.iCall.exact, true, '同年龄段长辈 exact');
+eq(x4.theyCall.label, '侄子', '小叔→我 = 侄子（不看年龄看辈分）');
+eq(x4.theyCall.exact, true, '小叔→我 exact');
+eq(x4.genDiff, -1, '小叔 genDiff -1（高我一辈）');
+
+// === 反向：年长的晚辈——堂哥 55 岁才生子，堂侄 27 岁与我(30)只差 3 岁，但低我一辈 ===
+// 家族：我 → 父亲 → 伯父(父亲的哥哥) → 堂哥(55) → 堂侄(27)
+var CP = [
+    { id: 'me', gender: 'm', age: 30 },
+    { id: 'fa', gender: 'm', age: 78 },
+    { id: 'bo', gender: 'm', age: 82 },
+    { id: 'tg', gender: 'm', age: 55 },
+    { id: 'tgs', gender: 'm', age: 27 } // 堂侄，只比我小 3 岁
+];
+var CR = [
+    { from: 'fa', to: 'me', type: '父亲' },
+    { from: 'bo', to: 'fa', type: '哥哥' },
+    { from: 'tg', to: 'bo', type: '儿子' },
+    { from: 'tgs', to: 'tg', type: '儿子' }
+];
+var x5 = K.mutual('me', 'tgs', CP, CR);
+eq(x5.iCall.label, '堂侄', '年长晚辈 我→堂侄 精确');
+eq(x5.iCall.exact, true, '年长晚辈 我→堂侄 exact');
+eq(x5.genDiff, 1, '年长晚辈 genDiff +1（低我一辈）');
+eq(x5.theyCall && x5.theyCall.exact, true, '年长晚辈 反向经祖辈链 exact');
+eq(x5.theyCall && x5.theyCall.label, '堂叔', '年长晚辈 堂侄→我 = 堂叔（隔着一条祖辈链）');
+
+// 未连通：两个方向都 null，genDiff null
+var x6 = K.mutual('me', 'tg', [
+    { id: 'me', gender: 'm' }, { id: 'fa', gender: 'm' }, { id: 'tg', gender: 'm' }
+], [{ from: 'fa', to: 'me', type: '父亲' }]);
+eq(x6.iCall, null, 'mutual 未连通 iCall null');
+eq(x6.theyCall, null, 'mutual 未连通 theyCall null');
+eq(x6.genDiff, null, 'mutual 未连通 genDiff null');
+
+// 自己和自己
+var x7 = K.mutual('me', 'me', MP, MR);
+eq(x7.iCall.label, '我', 'mutual 自己 iCall=我');
+eq(x7.genDiff, 0, 'mutual 自己 genDiff 0');
+
+// 无 root / 无 other：null 不抛错
+eq(K.mutual(null, 'fa', MP, MR).iCall, null, 'mutual 无 root 不抛错');
+eq(K.mutual('me', null, MP, MR).theyCall, null, 'mutual 无 other 不抛错');
+
 console.log('pass=' + pass + ' fail=' + fail);
 process.exit(fail ? 1 : 0);
