@@ -2240,6 +2240,7 @@ function openInfoCard(id) {
     document.getElementById('infoName').textContent = p.name;
     var kin = document.getElementById('infoKin');
     var pathEl = document.getElementById('infoPath');
+    var aliasEl = document.getElementById('infoAlias');
     var k = computeKinship();
     var lab = k ? k.labels[id] : null;
     if (id === state.data.rootId) {
@@ -2247,10 +2248,18 @@ function openInfoCard(id) {
         kin.className = 'kin-badge';
         kin.style.display = '';
         pathEl.classList.remove('show');
+        aliasEl.classList.remove('show');
     } else if (lab) {
         kin.textContent = lab.label;
         kin.className = 'kin-badge' + (lab.exact ? '' : ' inexact');
         kin.style.display = '';
+        // 正名旁边给出本土俗称：高祖父（又叫 老太爷、祖爷爷、太爷爷）
+        if (lab.exact && lab.alias && lab.alias.length) {
+            aliasEl.textContent = '又叫：' + lab.alias.slice(0, 3).join(' · ');
+            aliasEl.classList.add('show');
+        } else {
+            aliasEl.classList.remove('show');
+        }
         if (!lab.exact && lab.path && lab.path.length) {
             pathEl.textContent = lab.path.join(' → ');
             pathEl.classList.add('show');
@@ -2260,6 +2269,7 @@ function openInfoCard(id) {
     } else {
         kin.style.display = 'none';
         pathEl.classList.remove('show');
+        aliasEl.classList.remove('show');
     }
     var bits = [];
     if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
@@ -2297,7 +2307,9 @@ function renderMutualTitles(id, fwdLab) {
 
     function val(lab) {
         if (!lab) return '<span class="kin-none">没有到「我」的称呼链，先补一条关系</span>';
-        return '<span class="kin-val' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>';
+        var alias = lab.alias && lab.alias.length ? lab.alias.slice(0, 2).join(' · ') : '';
+        return '<span class="kin-val' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>' +
+            (alias ? '<span class="kin-alias">又叫 ' + esc(alias) + '</span>' : '');
     }
 
     var html =
@@ -2534,14 +2546,14 @@ function renderGraph() {
         var arr = layers[g];
         var x0 = (W - arr.length * COLW) / 2 + COLW / 2;
         arr.forEach(function (item, i) {
-            pos[item.p.id] = { x: x0 + i * COLW, y: PAD + gi * ROWH, label: item.l.label };
+            pos[item.p.id] = { x: x0 + i * COLW, y: PAD + gi * ROWH, label: item.l.label, alias: item.l.alias || [] };
         });
     });
     if (unreach.length) {
         var x0u = (W - unreach.length * COLW) / 2 + COLW / 2;
         var yu = PAD + gens.length * ROWH;
         unreach.forEach(function (p, i) {
-            pos[p.id] = { x: x0u + i * COLW, y: yu, label: p.titles[0] || '' };
+            pos[p.id] = { x: x0u + i * COLW, y: yu, label: p.titles[0] || '', alias: [] };
         });
     }
     var edgesHtml = '';
@@ -2562,7 +2574,7 @@ function renderGraph() {
         nodesHtml += '<g class="g-node' + (isRoot ? ' root' : '') + '" data-id="' + esc(p.id) + '" transform="translate(' + pt.x + ',' + pt.y + ')">' +
             '<circle r="18"></circle>' +
             '<text class="g-node-name" y="5">' + esc(p.name) + '</text>' +
-            '<text class="g-node-title" y="34">' + esc(pt.label) + '</text>' +
+            '<text class="g-node-title" y="34">' + (pt.alias && pt.alias.length ? '<title>' + esc(pt.label + '（又叫 ' + pt.alias.join('、') + '）') + '</title>' : '') + esc(pt.label) + '</text>' +
             '</g>';
     });
     body.innerHTML = '<svg class="graph-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + edgesHtml + nodesHtml + '</svg>';
@@ -2612,11 +2624,14 @@ function onSearch(q) {
     var k = computeKinship();
     var results = [];
     state.data.persons.forEach(function (p) {
-        var lab = k && k.labels[p.id] ? k.labels[p.id].label : '';
+        var lab = k && k.labels[p.id] ? k.labels[p.id] : null;
+        var label = lab ? lab.label : '';
+        var alias = lab && lab.alias ? lab.alias : [];
         var hit = p.name.indexOf(q) > -1 ||
-            (lab && lab.indexOf(q) > -1) ||
+            (label && label.indexOf(q) > -1) ||
+            alias.some(function (a) { return a.indexOf(q) > -1; }) ||
             p.titles.some(function (t) { return t.indexOf(q) > -1; });
-        if (hit) results.push({ p: p, lab: lab });
+        if (hit) results.push({ p: p, lab: label, alias: alias });
     });
     if (!results.length) {
         box.innerHTML = '<div class="search-empty">没有匹配「' + esc(q) + '」的人</div>';
@@ -2624,7 +2639,9 @@ function onSearch(q) {
         return;
     }
     box.innerHTML = results.slice(0, 20).map(function (r) {
-        var sub = r.lab || r.p.titles.join(' / ');
+        var sub = r.lab
+            ? r.lab + (r.alias.length ? '（又叫 ' + r.alias.slice(0, 2).join(' / ') + '）' : '')
+            : r.p.titles.join(' / ');
         return '<div class="search-item" onclick="jumpToPerson(\'' + esc(r.p.id) + '\')">' +
             '<span class="search-item-name">' + esc(r.p.name) + '</span>' +
             '<span class="search-item-title">' + esc(sub) + '</span></div>';
@@ -2646,8 +2663,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.39';
-        console.info('[kinmap] build 1.39 · 称谓双向换算（同龄不同辈也有明确称呼）');
+        document.title = '亲属关系地图 · 构建 1.42';
+        console.info('[kinmap] build 1.42 · 关系图修复（未连通的人不再让面板空白）');
     } catch (e) {}
 }
 

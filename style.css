@@ -465,6 +465,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Micr
 }
 
 .info-card-titles { font-size: 13px; color: #666; margin-bottom: 8px; }
+/* 本土俗称：正名（高祖父）之外的民间叫法（又叫 老太爷 · 祖爷爷 · 太爷爷） */
+.info-card-alias {
+    display: none;
+    font-size: 12px;
+    color: #7a6a45;
+    background: #fbf6e9;
+    border: 1px solid #f0e6cc;
+    border-radius: 6px;
+    padding: 2px 8px;
+    margin-bottom: 6px;
+    line-height: 1.6;
+}
+
+.info-card-alias.show { display: block; }
 
 .info-card-path {
     font-size: 12px;
@@ -496,6 +510,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Micr
     padding: 0 8px;
 }
 .kin-val.inexact { color: #666; font-weight: 400; background: #f0f0f0; }
+.kin-alias { font-size: 12px; color: #8a7a55; }
 .kin-none { color: #bbb; font-size: 12px; }
 .kin-gen { font-size: 12px; color: #b08a2e; margin-top: 2px; }
 /* 同龄不同辈警示：称呼看辈分不看年龄 */
