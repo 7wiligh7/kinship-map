@@ -2268,8 +2268,14 @@ function openInfoCard(id) {
         }
     } else {
         kin.style.display = 'none';
-        pathEl.classList.remove('show');
         aliasEl.classList.remove('show');
+        // 算不出称谓时别静默留空：把原因写出来，用户才知道是「没标记我」还是「关系链没接上」
+        if (!k) {
+            pathEl.textContent = '还没有标记「我」：编辑某个人物 → 勾选「标记为“我”」，才能换算称谓';
+        } else {
+            pathEl.textContent = '和「我」之间还没有连上的关系链：补一条关系（谁是谁的什么人）就能换算称谓';
+        }
+        pathEl.classList.add('show');
     }
     var bits = [];
     if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
@@ -2663,8 +2669,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.42';
-        console.info('[kinmap] build 1.42 · 关系图修复（未连通的人不再让面板空白）');
+        document.title = '亲属关系地图 · 构建 1.43';
+        console.info('[kinmap] build 1.43 · 信息卡：算不出称谓时直接写出原因');
     } catch (e) {}
 }
 
