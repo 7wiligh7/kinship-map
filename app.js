@@ -450,12 +450,15 @@ function normAge(v) {
 
 function normalizeData(d) {
     if (!d || typeof d !== 'object') return null;
+    // 裸数组（只有人物列表）也接受：按旧格式 buildings 对待
+    if (Array.isArray(d)) d = { buildings: d };
     if (Array.isArray(d.buildings)) {
         d = {
             persons: d.buildings.map(function (b) {
-                return { id: b.id, name: b.name || '', gender: b.gender || '', age: normAge(b.age), titles: b.titles || [], lat: b.lat, lng: b.lng };
+                // 旧格式可能没有 id（如坐标标注导出），自动补一个，否则会被白名单全数滤掉
+                return { id: b.id || newId(), name: b.name || '', gender: b.gender || '', age: normAge(b.age), titles: b.titles || [], lat: b.lat, lng: b.lng };
             }),
-            relations: [],
+            relations: d.relations || [],
             rootId: d.rootId || null
         };
     }
@@ -587,13 +590,28 @@ function initMap() {
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
 
-// 当前区域的外扩边界：区域多边形外扩 VIEW.EXPAND。
+// 区域多边形外扩固定公里数的矩形（四周各预留 VIEW.MARGIN_KM 公里）。
+// 之前按比例外扩（EXPAND 0.5），跨度大的区域视野翻倍、一次拉几十张瓦片，加载慢；
+// 改为固定公里数：框多大就多看 10km，可预期。
+// 纬度按 110.574km/°，经度按该纬度的纬线圈周长修正。
+function padRegionPolygon(poly) {
+    var b = L.latLngBounds(poly);
+    var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 10;
+    var mLat = km / 110.574;
+    var mLng = km / (111.32 * Math.cos(b.getCenter().lat * Math.PI / 180));
+    return L.latLngBounds(
+        [b.getSouth() - mLat, b.getWest() - mLng],
+        [b.getNorth() + mLat, b.getEast() + mLng]
+    );
+}
+
+// 当前区域的外扩边界：区域多边形四周各预留 VIEW.MARGIN_KM 公里。
 // 用于：默认视野 / 缩放下限 / 平移硬墙 / 瓦片范围。
 function regionBounds() {
     if (!state.data || draw.active || addMode) return null;
     var r = activeRegion();
     if (!r || !r.polygon || r.polygon.length < 3) return null;
-    return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
+    return padRegionPolygon(r.polygon);
 }
 
 // 瓦片加载边界：默认不限制（跟随视口，缩小时不会留白）。
@@ -607,6 +625,20 @@ function regionTileBounds() {
 
 // 平移硬边界 + 缩放下限：与区域边界同一来源（区域外扩）。
 // 无区域 / 绘制模式 / 放置模式时都解锁。
+// 视口两轴都不超过给定边界所需的最低缩放级（再缩小就会看到边界外）。
+// 与 fitRegion 的 zFor 同一套墨卡托局部近似，保持口径一致。
+function capZoomFor(b) {
+    var c = b.getCenter();
+    var size = map.getSize();
+    var kmW = (b.getEast() - b.getWest()) * 111.32 * Math.cos(c.lat * Math.PI / 180);
+    var kmH = (b.getNorth() - b.getSouth()) * 110.574;
+    function zFor(px, km) {
+        var mpp = km * 1000 / Math.max(1, px);
+        return Math.log(156543.03392 * Math.cos(c.lat * Math.PI / 180) / mpp) / Math.LN2;
+    }
+    return Math.max(zFor(size.x, kmW), zFor(size.y, kmH));
+}
+
 // 平移边界比缩放下限所需范围再放宽一圈：最小缩放时视野可能比区域大，
 // 若边界仍锁在区域上，视野会超出边界，拖动会被反复弹回。
 function syncMapPan() {
@@ -617,11 +649,12 @@ function syncMapPan() {
         // 最小缩放时视野可能比区域大，边界太紧会让拖动被反复弹回。
         var panB = b.pad(2);
         map.setMaxBounds(panB);
-        // 缩放下限 = 区域外扩范围恰好铺满视口的那一级：再缩小就看到区域外了。
-        // 退化多边形（跨度为 0）会让 getBoundsZoom 返回异常值，这里兜底保护，
+        // 缩放下限 = 两轴视野都不超过外扩范围的那一级（与 fitRegion 同一套口径），
+        // 再缩小就会看到区域外的 10km 预留圈以外。
+        // 退化多边形（跨度为 0）会让计算返回异常值，这里兜底保护，
         // 否则 minZoom 可能被设成 maxZoom，缩放被锁死。
-        var zMin = map.getBoundsZoom(b);
-        if (isFinite(zMin)) map.setMinZoom(Math.min(zMin, CONFIG.MAX_ZOOM));
+        var zMin = capZoomFor(b);
+        if (isFinite(zMin)) map.setMinZoom(Math.max(CONFIG.MIN_ZOOM, Math.min(zMin, CONFIG.MAX_ZOOM)));
         if (!panB.contains(map.getCenter())) {
             // 切到新区域时旧视野可能在新边界外：把中心拉回边界内
             map.panInsideBounds(panB, { animate: false });
@@ -680,7 +713,26 @@ var TileCache = (function () {
                     os.createIndex('used', 'used');
                 }
             };
-            req.onsuccess = function () { resolve(req.result); };
+            req.onsuccess = function () {
+                var db = req.result;
+                var pending = null;
+                // 缓存换代：CACHE_EPOCH 变了就整库清空。
+                // 瓦片按 URL 永久缓存，而 Esri 会不定期更新影像——
+                // 旧缓存里的过时图和新拉的网络图混在一起，画面会变成"拼花"。
+                // 以后再遇到拼花，把 config.js 里的 CACHE_EPOCH +1 即可强制全部刷新。
+                try {
+                    var ep = String(CONFIG.TILE.CACHE_EPOCH || 1);
+                    if (localStorage.getItem('kinmap_tiles_epoch') !== ep) {
+                        var tx = db.transaction(STORE, 'readwrite');
+                        tx.objectStore(STORE).clear();
+                        pending = new Promise(function (res) {
+                            tx.oncomplete = res; tx.onerror = res; tx.onabort = res;
+                        });
+                        try { localStorage.setItem('kinmap_tiles_epoch', ep); } catch (e2) {}
+                    }
+                } catch (e) {}
+                (pending || Promise.resolve()).then(function () { resolve(db); });
+            };
             req.onerror = function () { reject(req.error || new Error('idb error')); };
             req.onblocked = function () { reject(new Error('idb blocked')); };
         });
@@ -857,7 +909,7 @@ function tileRangeForBounds(bounds, z) {
 function offlineBaseBounds() {
     var r = activeRegion();
     if (!r || !r.polygon || r.polygon.length < 3) return null;
-    return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
+    return padRegionPolygon(r.polygon);
 }
 
 // 估算：从当前最小缩放级开始逐级累加，超过预算就停
@@ -1078,16 +1130,46 @@ function fitActiveRegion() {
     fitData(true);
 }
 
-// 把视野适配到某个区域：区域边界外扩一截，装满视口。
-// 与 syncMapPan 的缩放下限保持一致，所以这里不再设 maxZoom：
-// 否则这里算出的远景会被后面的 minZoom 强制拉近，配置项形同虚设。
+// 把视野适配到某个区域：目标 = 区域四周各预留 VIEW.MARGIN_KM 公里。
+// 两条硬约束：
+//   1) 区域本身永远完整可见（缩放不得超过"区域恰好铺满视口"那一级）；
+//   2) 任一轴的视野 ≤ 区域跨度 + 2×预留（宽屏下 fitBounds 会把另一轴溢出一倍，
+//      一个 20km 区域会看到 60~80km 宽，一次拉几十上百张瓦片，加载慢——就是这里修的）。
+// 两条冲突时（接近正方形的区域 + 宽屏）优先保证区域完整，此时允许小数缩放级，
+// 把视野正好卡在 10km 预留上。
 function fitRegion(r) {
     if (!map || !r || !r.polygon || r.polygon.length < 3) return;
     state.previewOutside = false; /* 换了/新建了区域：恢复该区域的平移与缩放限制 */
-    map.fitBounds(L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND), {
-        padding: CONFIG.VIEW.PADDING,
-        animate: false
-    });
+    var poly = L.latLngBounds(r.polygon);
+    var c = poly.getCenter();
+    var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 10;
+    var size = map.getSize();
+    // 让视口某一轴恰好显示 spanKm 公里所需的缩放级（墨卡托局部近似，1° 纬 ≈ 110.574km）
+    function zFor(px, kmSpan) {
+        var mpp = kmSpan * 1000 / Math.max(1, px);
+        return Math.log(156543.03392 * Math.cos(c.lat * Math.PI / 180) / mpp) / Math.LN2;
+    }
+    var capW = (poly.getEast() - poly.getWest()) * 111.32 * Math.cos(c.lat * Math.PI / 180) + 2 * km;
+    var capH = (poly.getNorth() - poly.getSouth()) * 110.574 + 2 * km;
+    var spanW = capW - 2 * km, spanH = capH - 2 * km;
+    // 两约束都取连续值，最后用小数缩放级落点：
+    //   zoom ≤ 区域恰好铺满视口的那一级（约束1）
+    //   zoom ≥ 预留不超 MARGIN_KM 的那一级（约束2）
+    var zoom = Math.min(
+        Math.min(zFor(size.x, spanW), zFor(size.y, spanH)),
+        Math.max(zFor(size.x, capW), zFor(size.y, capH))
+    );
+    zoom = Math.max(zoom, CONFIG.MIN_ZOOM);
+    zoom = Math.min(zoom, CONFIG.MAX_ZOOM);
+    // 小数缩放：整数级会跳过"正好 10km"的那一级。
+    // 期间把 minZoom 暂时放开到全局下限：否则上一次 syncMapPan 留下的
+    // 动态 minZoom（旧口径）会把这里的小数级顶回整数。
+    var snap = map.options.zoomSnap;
+    var oldMin = map.options.minZoom;
+    map.options.zoomSnap = 0;
+    map.options.minZoom = CONFIG.MIN_ZOOM;
+    try { map.setView(poly.getCenter(), zoom, { animate: false }); }
+    finally { map.options.zoomSnap = snap; map.options.minZoom = oldMin; }
     state._tileKey = null;
     syncTileBounds();
 }
@@ -1460,13 +1542,13 @@ function hintCoords() {
 function showPlaceResults(list) {
     state._placeResults = list;
     document.getElementById('placeResults').innerHTML = list.map(function (r, i) {
-        return '<div class="place-item" onclick="flyToPlace(' + i + ')" title="只把地图移到这个位置，不建区域">' +
+        return '<div class="place-item" onclick="flyToPlace(' + i + ')" title="跳转到该位置并适配比例尺，不建区域">' +
             (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
             '<span class="place-name">' + esc(r.name) + '</span>' +
             (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
             '</div>';
     }).join('') +
-    '<div class="place-empty">点结果只定位，不建区域；要建区域请用「地图上框选新区域」。</div>';
+    '<div class="place-empty">点结果跳转并按结果范围适配缩放，不建区域；要建区域请用「地图上框选新区域」。</div>';
 }
 
 /* 地名搜索：
@@ -1918,15 +2000,23 @@ function flyToPlace(i) {
         state._locateTarget = null;
     }, 1600);
     if (map.stop) map.stop(); /* 取消上一次还没跑完的动画，避免连点两次只有第一次生效 */
-    // 只跳转，不改变缩放、不按结果范围"框"视野
-    map.setView([anchor.lat, anchor.lng], map.getZoom(), { animate: false });
+    // 动态比例尺（像高德）：带范围框的结果按范围适配视野（搜"省"看到省、搜"村"看到村），
+    // 无范围框的 POI 点给街道级缩放（已比这更近则不动）。
+    var zoom;
+    if (b) {
+        zoom = map.getBoundsZoom(b, false, L.point(80, 80));
+        zoom = Math.max(CONFIG.MIN_ZOOM, Math.min(zoom, CONFIG.MAX_ZOOM));
+    } else {
+        zoom = Math.min(CONFIG.MAX_ZOOM, Math.max(17, map.getZoom()));
+    }
+    map.setView([anchor.lat, anchor.lng], zoom, { animate: false });
 
     if (addMode) { toast('已定位：点击地图放置人物', 3000); return; }
-    try { console.info('[search] 仅定位（不建区、不改缩放）：', r.name || anchor); } catch (e) {}
+    try { console.info('[search] 定位并适配比例尺（不建区）：', r.name || anchor); } catch (e) {}
     if (outside) {
-        toast('已定位到区域外（只移动地图，不建区）。要在这里建区：用「地图上框选新区域」', 4500);
+        toast('已定位到区域外（不会建区）。要在这里建区：用「地图上框选新区域」', 4500);
     } else {
-        toast('已定位到「' + (r.name || '目标位置') + '」（只移动地图，不会建区）', 2500);
+        toast('已定位到「' + (r.name || '目标位置') + '」（视野按结果范围适配，不会建区）', 2500);
     }
 }
 
@@ -2669,8 +2759,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.43';
-        console.info('[kinmap] build 1.43 · 信息卡：算不出称谓时直接写出原因');
+        document.title = '亲属关系地图 · 构建 1.44';
+        console.info('[kinmap] build 1.44 · 视野固定预留10km + 搜索动态比例尺 + 瓦片缓存换代 + 信息卡称谓原因');
     } catch (e) {}
 }
 
