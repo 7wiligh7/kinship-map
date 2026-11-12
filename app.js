@@ -603,23 +603,32 @@ function initMap() {
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
 
-// 区域多边形外扩固定公里数的矩形（四周各预留 VIEW.MARGIN_KM 公里）。
-// 之前按比例外扩（EXPAND 0.5），跨度大的区域视野翻倍、一次拉几十张瓦片，加载慢；
-// 改为固定公里数：框多大就多看 10km，可预期。
-// 纬度按 110.574km/°，经度按该纬度的纬线圈周长修正。
+// 区域多边形按比例外扩（四周各外扩 EXPAND_RATIO，总显示范围 ≈ 区域×1.5）。
+// 边界不随当前缩放比例尺变化：框定后只能操作此范围内的地图，到达边界后停止。
+// 超小区域（跨度 < 1km）再按固定 MARGIN_KM 公里外扩，避免边界过小无法拖动。
 function padRegionPolygon(poly) {
     var b = L.latLngBounds(poly);
-    var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 10;
-    var mLat = km / 110.574;
-    var mLng = km / (111.32 * Math.cos(b.getCenter().lat * Math.PI / 180));
-    return L.latLngBounds(
-        [b.getSouth() - mLat, b.getWest() - mLng],
-        [b.getNorth() + mLat, b.getEast() + mLng]
-    );
+    var c = b.getCenter();
+    var ratio = CONFIG.VIEW.EXPAND_RATIO != null ? CONFIG.VIEW.EXPAND_RATIO : 0.25;
+    var minSpanLat = (CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 1) / 110.574;
+    var minSpanLng = minSpanLat / Math.max(1e-6, Math.cos(c.lat * Math.PI / 180));
+    var spanLat = b.getNorth() - b.getSouth();
+    var spanLng = b.getEast() - b.getWest();
+    if (spanLat < minSpanLat && spanLng < minSpanLng) {
+        var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 1;
+        var mLat = km / 110.574;
+        var mLng = km / (111.32 * Math.cos(c.lat * Math.PI / 180));
+        return L.latLngBounds(
+            [b.getSouth() - mLat, b.getWest() - mLng],
+            [b.getNorth() + mLat, b.getEast() + mLng]
+        );
+    }
+    return b.pad(ratio);
 }
 
-// 当前区域的外扩边界：区域多边形四周各预留 VIEW.MARGIN_KM 公里。
+// 当前区域的外扩边界：区域多边形按比例外扩（总视野 ≈ 区域×1.5）。
 // 用于：默认视野 / 缩放下限 / 平移硬墙 / 瓦片范围。
+// 无区域 / 绘制模式 / 放置模式时 regionBounds() 返回 null，平移与缩放均解锁。
 function regionBounds() {
     if (!state.data || draw.active || addMode) return null;
     var r = activeRegion();
@@ -628,12 +637,11 @@ function regionBounds() {
 }
 
 // 瓦片加载边界：默认不限制（跟随视口，缩小时不会留白）。
-// 仅当开启 TILE_LIMIT_TO_REGION 时按区域范围加载。
-// 不缓存视口：Leaflet 的 TileLayer.bounds 会在每个缩放级别自动重新筛选。
+// 仅当开启 TILE_LIMIT_TO_REGION 时按区域范围加载（边界即 areaBounds，不再额外放大）。
 function regionTileBounds() {
     if (!CONFIG.TILE_LIMIT_TO_REGION) return null;
     var b = regionBounds();
-    return b ? b.pad(2) : null;
+    return b ? b : null;
 }
 
 // 平移硬边界 + 缩放下限：与区域边界同一来源（区域外扩）。
@@ -677,18 +685,19 @@ function capZoomFor(b) {
     return Math.max(zFor(size.x, kmW), zFor(size.y, kmH));
 }
 
-// 平移边界比缩放下限所需范围再放宽一圈：最小缩放时视野可能比区域大，
-// 若边界仍锁在区域上，视野会超出边界，拖动会被反复弹回。
+// 平移硬边界 + 缩放下限：与区域边界同一来源（区域按比例外扩后的边界，总视野 ≈ 区域×1.5）。
+// 无区域 / 绘制模式 / 放置模式时都解锁。
+// 边界 = 区域外扩后的范围，不再额外放大，保证“不论比例尺，框定后只能操作 1.5 倍区域”：
+//   - 平移到边界处停止（maxBoundsViscosity: 1.0，硬墙）
+//   - 缩到最小级时视野恰好 = 外扩边界，再缩小就会超出边界，因此被锁在该级
 function syncMapPan() {
     if (!map) return;
     var b = regionBounds();
     if (b && !state.previewOutside) {
-        // 平移硬墙比缩放下限所需范围再放宽两圈：
-        // 最小缩放时视野可能比区域大，边界太紧会让拖动被反复弹回。
-        var panB = b.pad(2);
+        var panB = b; // b 已是外扩边界，直接作为平移硬墙
         map.setMaxBounds(panB);
         // 缩放下限 = 两轴视野都不超过外扩范围的那一级（与 fitRegion 同一套口径），
-        // 再缩小就会看到区域外的 10km 预留圈以外。
+        // 再缩小就会看到区域外，因此 minZoom 被锁在此级以上。
         // 退化多边形（跨度为 0）会让计算返回异常值，这里兜底保护，
         // 否则 minZoom 可能被设成 maxZoom，缩放被锁死。
         var zMin = capZoomFor(b);
@@ -1069,29 +1078,31 @@ function fitActiveRegion() {
 // 把视野正好卡在 10km 预留上。
 function fitRegion(r) {
     if (!map || !r || !r.polygon || r.polygon.length < 3) return;
-    setPreview(false); /* 换了/新建了区域：恢复该区域的平移与缩放限制 */
+    setPreview(false); /* 换了/新建了区域：恢复该区域的平移与缩放限制（总视野 ≈ 区域×1.5）*/
     var poly = L.latLngBounds(r.polygon);
     var c = poly.getCenter();
-    var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 10;
     var size = map.getSize();
+    var ratio = CONFIG.VIEW.EXPAND_RATIO != null ? CONFIG.VIEW.EXPAND_RATIO : 0.25;
     // 让视口某一轴恰好显示 spanKm 公里所需的缩放级（墨卡托局部近似，1° 纬 ≈ 110.574km）
     function zFor(px, kmSpan) {
         var mpp = kmSpan * 1000 / Math.max(1, px);
         return Math.log(156543.03392 * Math.cos(c.lat * Math.PI / 180) / mpp) / Math.LN2;
     }
-    var capW = (poly.getEast() - poly.getWest()) * 111.32 * Math.cos(c.lat * Math.PI / 180) + 2 * km;
-    var capH = (poly.getNorth() - poly.getSouth()) * 110.574 + 2 * km;
-    var spanW = capW - 2 * km, spanH = capH - 2 * km;
+    var spanW = (poly.getEast() - poly.getWest()) * 111.32 * Math.cos(c.lat * Math.PI / 180);
+    var spanH = (poly.getNorth() - poly.getSouth()) * 110.574;
+    // 总显示跨度 = 区域跨度 × (1 + 2×ratio)（四周各外扩 ratio，总 ≈ 区域×1.5）
+    var capW = spanW * (1 + 2 * ratio);
+    var capH = spanH * (1 + 2 * ratio);
     // 两约束都取连续值，最后用小数缩放级落点：
     //   zoom ≤ 区域恰好铺满视口的那一级（约束1）
-    //   zoom ≥ 预留不超 MARGIN_KM 的那一级（约束2）
+    //   zoom ≥ 预留边界不超 total 1.5× 的那一级（约束2）
     var zoom = Math.min(
         Math.min(zFor(size.x, spanW), zFor(size.y, spanH)),
         Math.max(zFor(size.x, capW), zFor(size.y, capH))
     );
     zoom = Math.max(zoom, CONFIG.MIN_ZOOM);
     zoom = Math.min(zoom, CONFIG.MAX_ZOOM);
-    // 小数缩放：整数级会跳过"正好 10km"的那一级。
+    // 小数缩放：整数级会跳过"正好 1.5× 区域"的那一级。
     // 期间把 minZoom 暂时放开到全局下限：否则上一次 syncMapPan 留下的
     // 动态 minZoom（旧口径）会把这里的小数级顶回整数。
     var snap = map.options.zoomSnap;
