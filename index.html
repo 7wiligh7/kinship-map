@@ -8,7 +8,7 @@
     <title>亲属关系地图</title>
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🗺️</text></svg>">
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.53" />
+    <link rel="stylesheet" href="style.css?v=1.54" />
     <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
     <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
     <link rel="dns-prefetch" href="https://server.arcgisonline.com" />
@@ -132,7 +132,7 @@
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.7 · 构建 1.53（区域按比例外扩，边界处停止）</span>
+                <span class="version">v2.7 · 构建 1.54（区域按比例外扩 3 倍，边界处停止）</span>
             </div>
         </div>
 
@@ -254,10 +254,10 @@
     </div>
 
     <!-- defer 保持相对顺序；事件均经 app.js 的事件委托分发（见 ACTIONS），无内联 handler -->
-    <script defer src="config.js?v=1.53"></script>
+    <script defer src="config.js?v=1.54"></script>
     <script defer src="geocode.js?v=1.21"></script>
     <script defer src="kinship.js?v=1.53"></script>
-    <script defer src="tilecache.js?v=1.53"></script>
-    <script defer src="app.js?v=1.53"></script>
+    <script defer src="tilecache.js?v=1.54"></script>
+    <script defer src="app.js?v=1.54"></script>
 </body>
 </html>
