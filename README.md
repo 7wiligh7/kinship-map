@@ -86,7 +86,7 @@ python server.py
 - **旁系五服**：伯祖/叔祖、姑祖母（姑奶奶）、舅祖父（舅公）、姨祖母（姨婆），外祖一侧对应外伯祖/外叔祖/外姑祖母/外舅祖父/外姨祖母；再下一代接堂叔/堂姑、表叔/表姑、堂舅/表舅，往下接从堂兄弟、表侄/表侄女，再往后一代接侄孙、外甥孙（舅公/姨婆看我）
 - **姻亲**：伯母、婶婶、姑父、舅妈、姨父、嫂子、弟媳、姐夫、妹夫、儿媳、女婿、侄媳、孙媳、亲家公/亲家母、岳祖父、祖公公；配偶的兄弟姐妹按「我」的性别区分妻家（内兄/内弟、姨姐/姨妹）与夫家（大伯子/小叔子、大姑子/小姑子）
 
-测试：`node tests/kinship.test.js`（引擎 150 条断言）、`node tests/region.test.js`（区域几何校验 20 条断言）、`node tests/geocode.test.js`（地名搜索合并/纠偏 40 条断言）、`node tests/tile.test.js`（瓦片层选项 17 条断言）、`node tests/secrets.test.js`（防止 key 被提交）
+测试：`node tests/kinship.test.js`（引擎 150 条断言）、`node tests/region.test.js`（区域几何校验 20 条断言）、`node tests/geocode.test.js`（地名搜索合并/纠偏 40 条断言）、`node tests/tile.test.js`（瓦片层选项 17 条断言）、`node tests/secrets.test.js`（防止 key 被提交）、`node tests/actions.test.js`（事件委托一致性：无内联 handler、data-act 全覆盖）
 
 ## 隐私
 
@@ -100,11 +100,12 @@ python server.py
 ```
 index.html      页面骨架
 style.css       样式
-app.js          应用逻辑（地图/数据层/称谓接入/关系图/搜索）
+app.js          应用逻辑（地图/数据层/称谓接入/关系图/搜索/事件委托分发）
 geocode.js      地名搜索纯函数（坐标解析/GCJ-02↔WGS-84/BD-09 纠偏/多源结果合并，独立可用）
 kinship.js      称谓推算引擎（独立可用）
-config.js       配置（中心点/缩放/瓦片源/搜索源与 key/演示开关）
-server.py       本地静态服务器
+tilecache.js    瓦片落盘缓存 IndexedDB（独立模块，只依赖 config.js）
+config.js       配置（构建号/中心点/缩放/瓦片源/搜索源与 key/演示开关）
+server.py       本地静态服务器（默认仅本机回环；缓存分层 + gzip + CSP）
 vendor/leaflet/ Leaflet 1.9.4（本地化，不依赖 CDN）
 tests/          引擎测试
 ```
@@ -161,11 +162,11 @@ tests/          引擎测试
 v1.8 行为：
 
 - 瓦片加载范围由 `CONFIG.TILE_LIMIT_TO_REGION` 控制：默认 `false`（跟随视口，缩到最小时区域外也有图）；设为 `true` 则只加载当前区域范围（省流量，但区域外留白）
-- 平移有**硬边界**：地图拖不出当前区域外扩范围（区域 + 10km，`maxBoundsViscosity: 1.0`），像游戏地图"越界移不过去"
+- 平移有**硬边界**：地图拖不出当前区域外扩范围（区域 + 5km，`maxBoundsViscosity: 1.0`），像游戏地图"越界移不过去"
 - 缩放也受限：缩到"区域外扩范围恰好铺满视口"那一级就缩不动了（`syncMapPan` 按视口动态算 `minZoom`，窗口尺寸变化时重算）；绘制新区域 / 放置人物时临时解锁
 - 无区域（演示/空档案）时不限制范围
 - 建区尺寸校验 `REGION_MAX_SPAN_KM`（默认 20km，超出拦截）/ `REGION_MIN_SPAN_KM`、`REGION_MIN_AREA_KM2`（过小或共线拦截）；手绘闭合即校验，搜索建区超限则弹窗询问
-- 打开档案/切换区域时的初始视野：区域四周固定预留 10km（`CONFIG.VIEW.MARGIN_KM`，可调）恰好铺满视口（与缩放下限同一级）；无区域时才用 `CONFIG.VIEW.MAX_ZOOM`（15）限制"看全部人物"的视野
+- 打开档案/切换区域时的初始视野：区域上下左右各固定预留 5km（`CONFIG.VIEW.MARGIN_KM`，可调）恰好铺满视口（与缩放下限同一级）；无区域时才用 `CONFIG.VIEW.MAX_ZOOM`（15）限制"看全部人物"的视野
 
 ## 地图加载优化
 
@@ -210,6 +211,8 @@ v1.8 行为：
 
 限制：
 
+- **离线包只缓存地图瓦片**：应用页面本身（HTML/JS/CSS）没有 Service Worker，首次打开仍需联网；
+  已打开的页面断网后可正常用已缓存瓦片浏览
 - 一次最多下 `TILE.OFFLINE.MAX_TILES`（默认 2500 片 ≈ 30MB），避免 20km 大区域把硬盘塞满；
   超出预算的更高层级仍联网加载
 - 只存在**当前浏览器**里（IndexedDB），换设备/换浏览器不会跟随；要带走数据请用「导出数据」（那是人物/区域数据，不含瓦片）

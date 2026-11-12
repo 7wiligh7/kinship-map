@@ -3,13 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="在卫星地图上记录家人位置、推算亲属称谓、查看人物关系图。纯本地应用，数据只存你自己的浏览器。">
+    <meta name="theme-color" content="#2b6cb0">
     <title>亲属关系地图</title>
+    <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🗺️</text></svg>">
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.44" />
+    <link rel="stylesheet" href="style.css?v=1.52" />
     <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
     <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
     <link rel="dns-prefetch" href="https://server.arcgisonline.com" />
-    <script src="vendor/leaflet/leaflet.js"></script>
+    <!-- defer：不阻塞首屏渲染；defer 保持相对顺序，Leaflet 仍先于业务脚本执行 -->
+    <script defer src="vendor/leaflet/leaflet.js"></script>
 </head>
 <body>
     <div class="startup" id="startup">
@@ -19,26 +23,26 @@
             <div class="ws-list" id="wsList"></div>
             <div class="ws-create-form" id="wsCreateForm" style="display:none">
                 <input class="ws-input" id="wsNameInput" placeholder="档案名（如：我们家）" maxlength="20" />
-                <input class="ws-input" id="wsPlaceInput" placeholder="主要居住地（可选，如：李家村）" maxlength="30" onkeydown="if(event.key==='Enter') searchNewWsPlace()" />
+                <input class="ws-input" id="wsPlaceInput" placeholder="主要居住地（可选，如：李家村）" maxlength="30" />
                 <div class="ws-place-row">
-                    <button class="btn-cancel" onclick="searchNewWsPlace()">搜索位置</button>
+                    <button type="button" class="btn-cancel" data-act="searchNewWsPlace">搜索位置</button>
                     <span class="ws-place-hint" id="wsPlaceHint">选好后进地图会定位到那里，不会自动建区</span>
                 </div>
                 <div class="ws-place-results" id="wsPlaceResults"></div>
                 <div class="ws-emoji-row" id="wsEmojiRow">
-                    <span class="ws-emoji picked" data-e="🏡" onclick="pickEmoji(this)">🏡</span>
-                    <span class="ws-emoji" data-e="👨‍👩‍👧" onclick="pickEmoji(this)">👨‍👩‍👧</span>
-                    <span class="ws-emoji" data-e="🌳" onclick="pickEmoji(this)">🌳</span>
-                    <span class="ws-emoji" data-e="🏠" onclick="pickEmoji(this)">🏠</span>
-                    <span class="ws-emoji" data-e="👨‍👦" onclick="pickEmoji(this)">👨‍👦</span>
-                    <span class="ws-emoji" data-e="🌸" onclick="pickEmoji(this)">🌸</span>
+                    <button type="button" class="ws-emoji picked" data-act="pickEmoji" data-e="🏡">🏡</button>
+                    <button type="button" class="ws-emoji" data-act="pickEmoji" data-e="👨‍👩‍👧">👨‍👩‍👧</button>
+                    <button type="button" class="ws-emoji" data-act="pickEmoji" data-e="🌳">🌳</button>
+                    <button type="button" class="ws-emoji" data-act="pickEmoji" data-e="🏠">🏠</button>
+                    <button type="button" class="ws-emoji" data-act="pickEmoji" data-e="👨‍👦">👨‍👦</button>
+                    <button type="button" class="ws-emoji" data-act="pickEmoji" data-e="🌸">🌸</button>
                 </div>
                 <div class="ws-form-btns">
-                    <button class="btn-cancel" onclick="hideCreateForm()">取消</button>
-                    <button class="btn-confirm" onclick="createWorkspace()">创建</button>
+                    <button type="button" class="btn-cancel" data-act="hideCreateForm">取消</button>
+                    <button type="button" class="btn-confirm" data-act="createWorkspace">创建</button>
                 </div>
             </div>
-            <button class="ws-new-btn" id="wsNewBtn" onclick="showCreateForm()">＋ 新建档案</button>
+            <button type="button" class="ws-new-btn" id="wsNewBtn" data-act="showCreateForm">＋ 新建档案</button>
         </div>
     </div>
 
@@ -47,40 +51,43 @@
 
         <div class="demo-banner" id="demoBanner">
             <span>当前为演示数据</span>
-            <button onclick="clearDemo()">清空，开始记录自己的数据</button>
+            <button type="button" data-act="clearDemo">清空，开始记录自己的数据</button>
         </div>
 
         <div class="draw-hint" id="drawHint">
             <span>点击地图加顶点（≥3 个），双击或按钮闭合。建议跨度 ≤20km，相邻较远的居住地请分开建区</span>
             <span class="draw-span" id="drawSpan"></span>
-            <button onclick="undoVertex()">撤销</button>
-            <button onclick="finishRegion()">闭合命名</button>
-            <button class="hint-cancel" onclick="cancelDraw()">取消</button>
+            <button type="button" data-act="undoVertex">撤销</button>
+            <button type="button" data-act="finishRegion">闭合命名</button>
+            <button type="button" class="hint-cancel" data-act="cancelDraw">取消</button>
         </div>
 
-        <div class="menu-btn" onclick="toggleSidebar()">☰</div>
+        <!-- 区域外预览提示条：搜索跳到当前区域外时显示，点击一键返回当前区域 -->
+        <button type="button" class="preview-chip" id="previewChip" data-act="backToRegion" hidden></button>
 
-        <div class="location-btn" onclick="flyToMe()">⌖</div>
+        <button type="button" class="menu-btn" data-act="toggleSidebar" aria-label="打开/关闭侧栏">☰</button>
+
+        <button type="button" class="location-btn" data-act="flyToMe" aria-label="定位到我的位置">⌖</button>
 
         <div class="search-results" id="searchResults"></div>
 
         <div class="search-bar">
-            <span class="search-icon">🔍</span>
-            <input class="search-input" id="searchInput" placeholder="搜索亲戚姓名/称谓..." oninput="onSearch(this.value)" />
+            <span class="search-icon" aria-hidden="true">🔍</span>
+            <input class="search-input" id="searchInput" placeholder="搜索亲戚姓名/称谓..." aria-label="搜索亲戚姓名或称谓" />
         </div>
 
-        <div class="sidebar-mask" onclick="toggleSidebar()"></div>
+        <div class="sidebar-mask" data-act="toggleSidebar" aria-hidden="true"></div>
 
         <div class="sidebar">
             <div class="sidebar-header">
                 <span class="sidebar-title">亲属关系地图</span>
-                <span class="close-btn" onclick="toggleSidebar()">×</span>
+                <button type="button" class="close-btn" data-act="toggleSidebar" aria-label="关闭侧栏">×</button>
             </div>
 
             <div class="ws-bar">
                 <span class="ws-bar-emoji" id="wsBarEmoji">🏡</span>
                 <span class="ws-bar-name" id="wsBarName">档案</span>
-                <button class="ws-bar-switch" onclick="showStartup()">切换</button>
+                <button type="button" class="ws-bar-switch" data-act="showStartup">切换</button>
             </div>
 
             <div class="region-box">
@@ -88,60 +95,60 @@
                 <div class="region-current" id="regionCurrent">未划定</div>
                 <div class="region-list" id="regionList"></div>
                 <div class="place-search">
-                    <input class="place-input" id="placeInput" placeholder="地名 / 纬度,经度 / 粘贴拾取坐标" onkeydown="if (event.key === 'Enter') searchPlaces()" />
-                    <button class="place-btn" onclick="searchPlaces()">搜索</button>
-                    <button class="place-btn key-btn" onclick="openKeySettings()" title="搜索源设置（高德/天地图 key，免费）">⚙</button>
+                    <input class="place-input" id="placeInput" placeholder="地名 / 纬度,经度 / 粘贴拾取坐标" aria-label="搜索地名或输入坐标" />
+                    <button type="button" class="place-btn" data-act="searchPlaces">搜索</button>
+                    <button type="button" class="place-btn key-btn" data-act="openKeySettings" title="搜索源设置（高德/天地图 key，免费）" aria-label="搜索源设置">⚙</button>
                 </div>
                 <div class="place-results" id="placeResults"></div>
-                <button class="region-add" onclick="startDrawRegion()">＋ 地图上框选新区域</button>
-                <button class="region-add offline-add" onclick="offlineRegionDialog()" title="把当前区域的瓦片下到本地，之后进这个区域不用联网">⤓ 缓存本区离线图</button>
+                <button type="button" class="region-add" data-act="startDrawRegion">＋ 地图上框选新区域</button>
+                <button type="button" class="region-add offline-add" data-act="offlineRegionDialog" title="把当前区域的瓦片下到本地；已打开的页面断网也能看（页面本身首次打开仍需联网）">⤓ 缓存本区离线图</button>
             </div>
 
             <div class="sidebar-menu">
-                <div class="menu-item" onclick="openAddPerson()">
-                    <span class="menu-icon">📍</span>
+                <button type="button" class="menu-item" data-act="openAddPerson">
+                    <span class="menu-icon" aria-hidden="true">📍</span>
                     <span class="menu-text">添加人物</span>
-                </div>
+                </button>
 
-                <div class="menu-item" onclick="openGraph()">
-                    <span class="menu-icon">👥</span>
+                <button type="button" class="menu-item" data-act="openGraph">
+                    <span class="menu-icon" aria-hidden="true">👥</span>
                     <span class="menu-text">人物关系图</span>
-                </div>
+                </button>
 
-                <div class="menu-item" onclick="importData()">
-                    <span class="menu-icon">📥</span>
+                <button type="button" class="menu-item" data-act="importData">
+                    <span class="menu-icon" aria-hidden="true">📥</span>
                     <span class="menu-text">导入数据</span>
-                </div>
+                </button>
 
-                <div class="menu-item" onclick="exportData()">
-                    <span class="menu-icon">📤</span>
+                <button type="button" class="menu-item" data-act="exportData">
+                    <span class="menu-icon" aria-hidden="true">📤</span>
                     <span class="menu-text">导出数据</span>
-                </div>
+                </button>
 
-                <div class="menu-item" onclick="clearAll()">
-                    <span class="menu-icon">🗑️</span>
+                <button type="button" class="menu-item" data-act="clearAll">
+                    <span class="menu-icon" aria-hidden="true">🗑️</span>
                     <span class="menu-text">清除全部</span>
-                </div>
+                </button>
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.7 · 构建 1.44（视野预留10km·搜索动态比例尺·称谓原因提示）</span>
+                <span class="version">v2.7 · 构建 1.52（修复按钮透明·悬停缩放阴影·区域视野外扩5km）</span>
             </div>
         </div>
 
-        <div class="modal" id="modal">
+        <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
             <div class="modal-content">
                 <div class="modal-header">
                     <span class="modal-title" id="modalTitle">添加人物</span>
                 </div>
 
                 <div class="form-group">
-                    <label class="label">姓名</label>
+                    <label class="label" for="inputName">姓名</label>
                     <input class="input" id="inputName" placeholder="输入姓名" />
                 </div>
 
                 <div class="form-group">
-                    <label class="label">性别</label>
+                    <label class="label" for="inputGender">性别</label>
                     <select class="input" id="inputGender">
                         <option value="">未填</option>
                         <option value="m">男</option>
@@ -150,7 +157,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="label">年龄</label>
+                    <label class="label" for="inputAge">年龄</label>
                     <input class="input" id="inputAge" type="number" min="0" max="150" step="1" placeholder="年龄（选填）" />
                 </div>
 
@@ -158,11 +165,11 @@
                     <label class="label">手填称谓（推算不出时的兜底）</label>
                     <div id="titleList">
                         <div class="title-row">
-                            <input class="input title-input" placeholder="输入称谓" />
-                            <span class="btn-remove" onclick="removeTitleRow(this)">×</span>
+                            <input class="input title-input" placeholder="输入称谓" aria-label="手填称谓" />
+                            <button type="button" class="btn-remove" data-act="removeTitleRow" aria-label="删除该称谓">×</button>
                         </div>
                     </div>
-                    <button class="btn-add-title" onclick="addTitleRow()">+ 添加称谓</button>
+                    <button type="button" class="btn-add-title" data-act="addTitleRow">+ 添加称谓</button>
                 </div>
 
                 <div class="form-group root-row">
@@ -173,16 +180,16 @@
                 </div>
 
                 <div class="modal-buttons">
-                    <button class="btn-cancel" onclick="closeModal()">取消</button>
-                    <button class="btn-delete" id="btnDelete" onclick="deletePerson()" style="display:none">删除</button>
-                    <button class="btn-confirm" onclick="confirmPerson()">确定</button>
+                    <button type="button" class="btn-cancel" data-act="closeModal">取消</button>
+                    <button type="button" class="btn-delete" id="btnDelete" data-act="deletePerson" style="display:none">删除</button>
+                    <button type="button" class="btn-confirm" data-act="confirmPerson">确定</button>
                 </div>
             </div>
         </div>
 
         <div class="context-menu" id="contextMenu">
-            <div class="context-menu-item" onclick="editFromMenu()">编辑</div>
-            <div class="context-menu-item delete" onclick="deleteFromMenu()">删除</div>
+            <button type="button" class="context-menu-item" data-act="editFromMenu">编辑</button>
+            <button type="button" class="context-menu-item delete" data-act="deleteFromMenu">删除</button>
         </div>
 
         <div class="info-card" id="infoCard">
@@ -191,7 +198,7 @@
                     <span class="info-card-name" id="infoName">-</span>
                     <span class="kin-badge" id="infoKin" style="display:none"></span>
                 </div>
-                <span class="close-btn" onclick="closeInfoCard()">×</span>
+                <button type="button" class="close-btn" data-act="closeInfoCard" aria-label="关闭信息卡">×</button>
             </div>
             <div class="info-card-titles" id="infoTitles"></div>
             <div class="info-card-alias" id="infoAlias"></div>
@@ -203,23 +210,23 @@
 
             <div class="rel-form" id="relForm">
                 <div class="rel-line">
-                    <select id="relFrom"></select>
+                    <select id="relFrom" aria-label="关系主体"></select>
                     <span>是</span>
-                    <select id="relTo"></select>
+                    <select id="relTo" aria-label="关系客体"></select>
                     <span>的</span>
                 </div>
                 <div class="rel-line">
-                    <select id="relType"></select>
-                    <button class="btn-confirm btn-small" onclick="saveRelation()">添加</button>
-                    <button class="btn-cancel btn-small" onclick="hideRelForm()">取消</button>
+                    <select id="relType" aria-label="关系类型"></select>
+                    <button type="button" class="btn-confirm btn-small" data-act="saveRelation">添加</button>
+                    <button type="button" class="btn-cancel btn-small" data-act="hideRelForm">取消</button>
                 </div>
             </div>
 
             <div class="info-card-buttons">
-                <button class="btn-cancel" onclick="closeInfoCard()">关闭</button>
-                <button class="btn-cancel" onclick="showRelForm()">+ 关系</button>
-                <button class="btn-confirm" onclick="editFromCard()">编辑</button>
-                <button class="btn-cancel" onclick="openGraph()">关系图</button>
+                <button type="button" class="btn-cancel" data-act="closeInfoCard">关闭</button>
+                <button type="button" class="btn-cancel" data-act="showRelForm">+ 关系</button>
+                <button type="button" class="btn-confirm" data-act="editFromCard">编辑</button>
+                <button type="button" class="btn-cancel" data-act="openGraph">关系图</button>
             </div>
         </div>
 
@@ -228,12 +235,12 @@
                 <span class="graph-title">人物关系图</span>
                 <span class="graph-root" id="graphRoot"></span>
                 <span class="graph-hint">悬停高亮路径 · 点击定位</span>
-                <span class="close-btn" onclick="closeGraph()">×</span>
+                <button type="button" class="close-btn" data-act="closeGraph" aria-label="关闭关系图">×</button>
             </div>
             <div class="graph-body" id="graphBody"></div>
         </div>
 
-        <div class="dialog" id="dialog">
+        <div class="dialog" id="dialog" role="dialog" aria-modal="true">
             <div class="dialog-box">
                 <div class="dialog-title" id="dialogTitle"></div>
                 <div class="dialog-body" id="dialogBody"></div>
@@ -241,14 +248,16 @@
             </div>
         </div>
 
-        <div class="toast" id="toast">-</div>
+        <div class="toast" id="toast" role="status" aria-live="polite">-</div>
 
-        <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="handleImport(this)" />
+        <input type="file" id="importFile" accept=".json,application/json" style="display:none" />
     </div>
 
-    <script src="config.js?v=1.44"></script>
-    <script src="geocode.js?v=1.21"></script>
-    <script src="kinship.js?v=1.44"></script>
-    <script src="app.js?v=1.44"></script>
+    <!-- defer 保持相对顺序；事件均经 app.js 的事件委托分发（见 ACTIONS），无内联 handler -->
+    <script defer src="config.js?v=1.52"></script>
+    <script defer src="geocode.js?v=1.21"></script>
+    <script defer src="kinship.js?v=1.52"></script>
+    <script defer src="tilecache.js?v=1.52"></script>
+    <script defer src="app.js?v=1.52"></script>
 </body>
 </html>

@@ -17,7 +17,8 @@ var state = {
     editingId: null,
     // 首屏视野就位前不建瓦片层：否则会先按默认中心下一屏无用的瓦片
     tilesReady: false,
-    // 搜索定位到当前区域外时临时解锁平移硬墙（回到区域内自动恢复）
+    // 搜索定位到当前区域外时临时解锁平移硬墙（回到区域内自动恢复）。
+    // 状态变化统一走 setPreview：同步顶部"预览中"提示条。
     previewOutside: false
 };
 
@@ -42,6 +43,8 @@ function toast(msg, ms) {
     t._timer = setTimeout(function () { t.classList.remove('show'); }, ms || 2200);
 }
 
+var dlgReturnFocus = null; // 打开对话框前的焦点元素，关闭时还给它们
+
 function showDialog(opts) {
     document.getElementById('dialogTitle').textContent = opts.title || '';
     document.getElementById('dialogBody').innerHTML = opts.body || '';
@@ -58,10 +61,16 @@ function showDialog(opts) {
         box.appendChild(el);
     });
     document.getElementById('dialog').classList.add('show');
+    // 键盘可达：焦点移进对话框第一个按钮
+    dlgReturnFocus = document.activeElement;
+    var firstBtn = box.querySelector('button');
+    if (firstBtn) setTimeout(function () { firstBtn.focus(); }, 0);
 }
 
 function hideDialog() {
     document.getElementById('dialog').classList.remove('show');
+    if (dlgReturnFocus && dlgReturnFocus.focus) { try { dlgReturnFocus.focus(); } catch (e) {} }
+    dlgReturnFocus = null;
 }
 
 function toggleSidebar() {
@@ -236,11 +245,11 @@ function renderStartup() {
         box.innerHTML = list.map(function (w) {
             var d = loadWs(w.id);
             var n = d ? d.persons.length : 0;
-            return '<div class="ws-card" onclick="enterWorkspace(\'' + esc(w.id) + '\')">' +
+            return '<div class="ws-card" role="button" tabindex="0" data-act="enterWorkspace" data-id="' + esc(w.id) + '">' +
                 '<span class="ws-card-emoji">' + esc(w.emoji || '🏡') + '</span>' +
                 '<span class="ws-card-info"><div class="ws-card-name">' + esc(w.name) + '</div>' +
                 '<div class="ws-card-meta">' + n + ' 人</div></span>' +
-                '<button class="ws-card-del" title="删除档案" onclick="event.stopPropagation(); deleteWorkspace(\'' + esc(w.id) + '\')">✕</button>' +
+                '<button type="button" class="ws-card-del" title="删除档案" aria-label="删除档案 ' + esc(w.name) + '" data-act="deleteWorkspace" data-id="' + esc(w.id) + '">✕</button>' +
                 '</div>';
         }).join('');
     }
@@ -286,7 +295,7 @@ function searchNewWsPlace() {
 function showNewWsResults(list) {
     state._newWsPlaces = list;
     document.getElementById('wsPlaceResults').innerHTML = list.map(function (r, i) {
-        return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
+        return '<div class="place-item" role="button" tabindex="0" data-act="pickNewWsPlace" data-i="' + i + '">' +
             (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
             '<span class="place-name">' + esc(r.name) + '</span>' +
             (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
@@ -361,6 +370,8 @@ function deleteWorkspace(id) {
 
 // 切换档案：把上一个档案的瞬时状态清干净，避免痕迹带进新档案
 function resetWorkspaceUI() {
+    // 区域外预览：跨档案不留状态（提示条一并隐藏）
+    setPreview(false);
     // 人名搜索：输入框 + 下拉结果
     var box = document.getElementById('searchResults');
     if (box) { box.classList.remove('show'); box.innerHTML = ''; }
@@ -570,7 +581,7 @@ function initMap() {
         if (state.previewOutside) {
             var rb = regionBounds();
             if (rb && rb.contains(map.getCenter())) {
-                state.previewOutside = false;
+                setPreview(false);
                 syncMapPan();
             }
         }
@@ -581,11 +592,13 @@ function initMap() {
         syncTileBounds(); /* 放置完成：恢复瓦片范围 + 平移硬墙 */
         openPersonModal(null, e.latlng);
     });
-    window.addEventListener('resize', function () {
+    function onViewportChange() {
         if (!map) return;
         map.invalidateSize();
         syncMapPan(); // 视口尺寸变了，缩放下限要重算
-    });
+    }
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange); // 手机转屏
 }
 
 /* ===== tile bounds: 瓦片与平移范围锚定当前区域 ===== */
@@ -625,6 +638,31 @@ function regionTileBounds() {
 
 // 平移硬边界 + 缩放下限：与区域边界同一来源（区域外扩）。
 // 无区域 / 绘制模式 / 放置模式时都解锁。
+// 区域外预览状态：统一入口。previewOutside 置位的同时同步顶部提示条，
+// 让"现在看得比硬墙远"这个状态在界面上可见、可一键退出。
+function setPreview(on) {
+    state.previewOutside = on;
+    updatePreviewChip();
+}
+
+function updatePreviewChip() {
+    var chip = document.getElementById('previewChip');
+    if (!chip) return;
+    if (state.previewOutside) {
+        var r = activeRegion();
+        chip.textContent = '正在预览当前区域外 · 点击返回「' + (r ? r.name : '区域') + '」';
+        chip.hidden = false;
+    } else {
+        chip.hidden = true;
+    }
+}
+
+// 提示条点击：从区域外预览一键回到当前区域视野（区域+10km）
+function backToRegion() {
+    var r = activeRegion();
+    if (r) fitRegion(r);
+}
+
 // 视口两轴都不超过给定边界所需的最低缩放级（再缩小就会看到边界外）。
 // 与 fitRegion 的 zFor 同一套墨卡托局部近似，保持口径一致。
 function capZoomFor(b) {
@@ -688,116 +726,8 @@ function tileOpts(extra) {
     return o;
 }
 
-// 瓦片落盘缓存（IndexedDB）。
-// 键 = 瓦片 URL，值 = { blob, used }；超过 CACHE_MAX 片时按最久未用淘汰。
-// 取不到/不可用（隐私模式、file:// 受限）时静默降级为纯网络加载。
-var TileCache = (function () {
-    var DB_NAME = 'kinmap_tiles';
-    var STORE = 'tiles';
-    var MAX = CONFIG.TILE.CACHE_MAX || 6000;
-    var enabled = CONFIG.TILE.CACHE !== false &&
-        typeof indexedDB !== 'undefined' && !!window.indexedDB;
-    var dbPromise = null;
-    var writes = 0;
+// 瓦片落盘缓存已拆到 tilecache.js（var TileCache，在本文件之前加载）。
 
-    function openDb() {
-        if (!enabled) return Promise.reject(new Error('cache disabled'));
-        if (dbPromise) return dbPromise;
-        dbPromise = new Promise(function (resolve, reject) {
-            var req;
-            try { req = indexedDB.open(DB_NAME, 1); } catch (e) { reject(e); return; }
-            req.onupgradeneeded = function () {
-                var db = req.result;
-                if (!db.objectStoreNames.contains(STORE)) {
-                    var os = db.createObjectStore(STORE);
-                    os.createIndex('used', 'used');
-                }
-            };
-            req.onsuccess = function () {
-                var db = req.result;
-                var pending = null;
-                // 缓存换代：CACHE_EPOCH 变了就整库清空。
-                // 瓦片按 URL 永久缓存，而 Esri 会不定期更新影像——
-                // 旧缓存里的过时图和新拉的网络图混在一起，画面会变成"拼花"。
-                // 以后再遇到拼花，把 config.js 里的 CACHE_EPOCH +1 即可强制全部刷新。
-                try {
-                    var ep = String(CONFIG.TILE.CACHE_EPOCH || 1);
-                    if (localStorage.getItem('kinmap_tiles_epoch') !== ep) {
-                        var tx = db.transaction(STORE, 'readwrite');
-                        tx.objectStore(STORE).clear();
-                        pending = new Promise(function (res) {
-                            tx.oncomplete = res; tx.onerror = res; tx.onabort = res;
-                        });
-                        try { localStorage.setItem('kinmap_tiles_epoch', ep); } catch (e2) {}
-                    }
-                } catch (e) {}
-                (pending || Promise.resolve()).then(function () { resolve(db); });
-            };
-            req.onerror = function () { reject(req.error || new Error('idb error')); };
-            req.onblocked = function () { reject(new Error('idb blocked')); };
-        });
-        return dbPromise;
-    }
-
-    function store(mode) {
-        return openDb().then(function (db) {
-            return db.transaction(STORE, mode).objectStore(STORE);
-        });
-    }
-
-    function get(url) {
-        if (!enabled) return Promise.resolve(null);
-        return store('readonly').then(function (os) {
-            return new Promise(function (resolve) {
-                var req = os.get(url);
-                req.onsuccess = function () { resolve(req.result || null); };
-                req.onerror = function () { resolve(null); };
-            });
-        }).catch(function () { return null; });
-    }
-
-    function put(url, blob) {
-        if (!enabled) return;
-        store('readwrite').then(function (os) {
-            os.put({ blob: blob, used: Date.now() }, url);
-        }).catch(function () {});
-        if (++writes % 200 === 0) prune();
-    }
-
-    // 预热：已缓存就跳过，否则后台下载并落盘（用于预取放大后要用的瓦片）
-    function warm(url) {
-        if (!enabled) return;
-        get(url).then(function (rec) {
-            if (rec && rec.blob) return;
-            fetch(url, { mode: 'cors', credentials: 'omit' })
-                .then(function (res) { return res.ok ? res.blob() : null; })
-                .then(function (blob) { if (blob) put(url, blob); })
-                .catch(function () {});
-        });
-    }
-
-    // 粗粒度清理：保留最近使用的约 70%
-    function prune() {
-        store('readwrite').then(function (os) {
-            var countReq = os.count();
-            countReq.onsuccess = function () {
-                var total = countReq.result;
-                if (total <= MAX) return;
-                var drop = total - Math.floor(MAX * 0.7);
-                var cursorReq = os.index('used').openCursor();
-                cursorReq.onsuccess = function () {
-                    var cur = cursorReq.result;
-                    if (!cur || drop <= 0) return;
-                    cur.delete();
-                    drop--;
-                    cur.continue();
-                };
-            };
-        }).catch(function () {});
-    }
-
-    return { available: enabled, get: get, put: put, warm: warm };
-})();
 
 // 带缓存的瓦片层：先查 IndexedDB，未命中再 fetch 网络并回写。
 // 同一区域第二次打开、反复拖动都不再走网络；断网也能显示看过的范围。
@@ -1139,7 +1069,7 @@ function fitActiveRegion() {
 // 把视野正好卡在 10km 预留上。
 function fitRegion(r) {
     if (!map || !r || !r.polygon || r.polygon.length < 3) return;
-    state.previewOutside = false; /* 换了/新建了区域：恢复该区域的平移与缩放限制 */
+    setPreview(false); /* 换了/新建了区域：恢复该区域的平移与缩放限制 */
     var poly = L.latLngBounds(r.polygon);
     var c = poly.getCenter();
     var km = CONFIG.VIEW.MARGIN_KM != null ? CONFIG.VIEW.MARGIN_KM : 10;
@@ -1223,9 +1153,9 @@ function renderRegions() {
     document.getElementById('regionCurrent').textContent = cur ? cur.name : (state.data && state.data.regions.length ? state.data.regions[0].name : '未划定');
     var list = document.getElementById('regionList');
     list.innerHTML = (state.data ? state.data.regions : []).map(function (r) {
-        return '<div class="region-item' + (r.id === state.data.activeRegionId ? ' active' : '') + '" onclick="switchRegion(\'' + esc(r.id) + '\')">' +
+        return '<div class="region-item' + (r.id === state.data.activeRegionId ? ' active' : '') + '" role="button" tabindex="0" data-act="switchRegion" data-id="' + esc(r.id) + '">' +
             '<span class="region-item-name">' + esc(r.name) + '</span>' +
-            '<button class="region-item-del" title="删除区域" onclick="event.stopPropagation(); deleteRegion(\'' + esc(r.id) + '\')">✕</button>' +
+            '<button type="button" class="region-item-del" title="删除区域" aria-label="删除区域 ' + esc(r.name) + '" data-act="deleteRegion" data-id="' + esc(r.id) + '">✕</button>' +
             '</div>';
     }).join('');
     if (state.regionLayer) {
@@ -1297,6 +1227,7 @@ function startDrawRegion() {
     if (!state.workspace) return;
     if (draw.active) return;
     toggleSidebarIfOpen();
+    setPreview(false); /* 进入绘制：预览态结束（绘制模式本就无硬墙，提示条会误导） */
     draw.active = true;
     draw.vertices = [];
     draw.vertexMarkers = [];
@@ -1518,10 +1449,10 @@ function showPlaceError(e) {
             : (noResult ? '换个写法试试（如「星子镇 连州」），或直接用下面的方式定位：' : esc(msg))) +
         '</div>' +
         '<div class="place-error-actions">' +
-        '<button class="place-act primary" onclick="startDrawRegion()">在地图上框选区域</button>' +
-        '<button class="place-act" onclick="hintCoords()">粘贴坐标</button>' +
-        '<button class="place-act" onclick="openKeySettings()">填 key</button>' +
-        '<button class="place-act" onclick="retryPlaceSearch()">重试</button>' +
+        '<button type="button" class="place-act primary" data-act="startDrawRegion">在地图上框选区域</button>' +
+        '<button type="button" class="place-act" data-act="hintCoords">粘贴坐标</button>' +
+        '<button type="button" class="place-act" data-act="openKeySettings">填 key</button>' +
+        '<button type="button" class="place-act" data-act="retryPlaceSearch">重试</button>' +
         '</div>' +
         '<div class="place-error-foot">也可以直接用「＋ 地图上框选新区域」手动划定。</div>' +
         '</div>';
@@ -1542,7 +1473,7 @@ function hintCoords() {
 function showPlaceResults(list) {
     state._placeResults = list;
     document.getElementById('placeResults').innerHTML = list.map(function (r, i) {
-        return '<div class="place-item" onclick="flyToPlace(' + i + ')" title="跳转到该位置并适配比例尺，不建区域">' +
+        return '<div class="place-item" role="button" tabindex="0" data-act="flyToPlace" data-i="' + i + '" title="跳转到该位置并适配比例尺，不建区域">' +
             (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
             '<span class="place-name">' + esc(r.name) + '</span>' +
             (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
@@ -1982,11 +1913,24 @@ function flyToPlace(i) {
     var b = r.bbox ? L.latLngBounds([[r.bbox.south, r.bbox.west], [r.bbox.north, r.bbox.east]]) : null;
     var anchor = b ? b.getCenter() : L.latLng(r.lat, r.lng);
 
+    // 多区域档案：目标点落在另一个已框定区域内 → 直接切换到那个区域。
+    // 视野 = 该区域 + 10km、硬墙与区域高亮一并跟随——比"悬在区域外预览"
+    // 更符合档案内跳转（家在 A 村，搜 B 村的亲戚就该切到 B 村）。
+    if (state.data && state.data.regions.length) {
+        for (var ri = 0; ri < state.data.regions.length; ri++) {
+            var rg = state.data.regions[ri];
+            if (rg.polygon && rg.polygon.length >= 3 && L.latLngBounds(rg.polygon).contains(anchor)) {
+                if (rg.id !== state.data.activeRegionId) { switchRegion(rg.id); return; }
+                break; // 目标就在当前区域内：走正常定位流程
+            }
+        }
+    }
+
     // 目标在当前区域外：临时解除平移硬墙，允许"预览式"定位
     var panB = map.options.maxBounds;
     var outside = !!(panB && !panB.contains(anchor));
     if (outside) {
-        state.previewOutside = true;
+        setPreview(true);
         map.setMaxBounds(null);
         map.setMinZoom(CONFIG.MIN_ZOOM);
     }
@@ -2012,11 +1956,9 @@ function flyToPlace(i) {
     map.setView([anchor.lat, anchor.lng], zoom, { animate: false });
 
     if (addMode) { toast('已定位：点击地图放置人物', 3000); return; }
-    try { console.info('[search] 定位并适配比例尺（不建区）：', r.name || anchor); } catch (e) {}
+    // 区域内不再弹提示：地图已明显移动定位；区域外仍提示（引导怎么建区）
     if (outside) {
         toast('已定位到区域外（不会建区）。要在这里建区：用「地图上框选新区域」', 4500);
-    } else {
-        toast('已定位到「' + (r.name || '目标位置') + '」（视野按结果范围适配，不会建区）', 2500);
     }
 }
 
@@ -2130,7 +2072,7 @@ function addTitleRow(val) {
     var tl = document.getElementById('titleList');
     var row = document.createElement('div');
     row.className = 'title-row';
-    row.innerHTML = '<input class="input title-input" placeholder="输入称谓" /><span class="btn-remove" onclick="removeTitleRow(this)">×</span>';
+    row.innerHTML = '<input class="input title-input" placeholder="输入称谓" aria-label="手填称谓" /><button type="button" class="btn-remove" data-act="removeTitleRow" aria-label="删除该称谓">×</button>';
     row.querySelector('input').value = val || '';
     tl.appendChild(row);
 }
@@ -2448,8 +2390,8 @@ function renderRelList(id) {
         return '<div class="rel-item"><span class="rel-sentence">' +
             esc(personName(r.from)) + ' 是 ' + esc(personName(r.to)) + ' 的 ' + esc(r.type) +
             '</span><span class="rel-actions">' +
-            '<button class="rel-btn" onclick="jumpToPerson(\'' + esc(r.from) + '\')">定位</button>' +
-            '<button class="rel-btn del" onclick="deleteRelation(' + idx + ')">删除</button>' +
+            '<button type="button" class="rel-btn" data-act="jumpToPerson" data-id="' + esc(r.from) + '">定位</button>' +
+            '<button type="button" class="rel-btn del" data-act="deleteRelation" data-i="' + idx + '">删除</button>' +
             '</span></div>';
     }).join('');
 }
@@ -2738,7 +2680,7 @@ function onSearch(q) {
         var sub = r.lab
             ? r.lab + (r.alias.length ? '（又叫 ' + r.alias.slice(0, 2).join(' / ') + '）' : '')
             : r.p.titles.join(' / ');
-        return '<div class="search-item" onclick="jumpToPerson(\'' + esc(r.p.id) + '\')">' +
+        return '<div class="search-item" role="button" tabindex="0" data-act="jumpToPerson" data-id="' + esc(r.p.id) + '">' +
             '<span class="search-item-name">' + esc(r.p.name) + '</span>' +
             '<span class="search-item-title">' + esc(sub) + '</span></div>';
     }).join('');
@@ -2757,14 +2699,73 @@ function hideSearch() {
 function boot() {
     migrateLegacy();
     renderStartup();
-    // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
+    // 便于排查"改了却没生效"：标签页标题会带上构建号（构建号定义在 config.js BUILD）
     try {
-        document.title = '亲属关系地图 · 构建 1.44';
-        console.info('[kinmap] build 1.44 · 视野固定预留10km + 搜索动态比例尺 + 瓦片缓存换代 + 信息卡称谓原因');
+        document.title = '亲属关系地图 · 构建 ' + (CONFIG.BUILD || '?');
     } catch (e) {}
 }
 
+/* ===== 事件委托：替代内联 onclick（CSP 友好） =====
+ * 静态 HTML 与动态 innerHTML 统一用 data-act 声明动作，data-id/data-i/data-e 传参；
+ * 白名单分发，不执行任意属性值。 */
+var ACTIONS = {
+    // 零参动作直接映射
+    toggleSidebar: toggleSidebar,
+    clearDemo: clearDemo,
+    undoVertex: undoVertex,
+    finishRegion: finishRegion,
+    cancelDraw: cancelDraw,
+    flyToMe: flyToMe,
+    searchNewWsPlace: searchNewWsPlace,
+    hideCreateForm: hideCreateForm,
+    createWorkspace: createWorkspace,
+    showCreateForm: showCreateForm,
+    searchPlaces: searchPlaces,
+    openKeySettings: openKeySettings,
+    startDrawRegion: startDrawRegion,
+    offlineRegionDialog: offlineRegionDialog,
+    openAddPerson: openAddPerson,
+    openGraph: openGraph,
+    importData: importData,
+    exportData: exportData,
+    clearAll: clearAll,
+    showStartup: showStartup,
+    closeInfoCard: closeInfoCard,
+    showRelForm: showRelForm,
+    hideRelForm: hideRelForm,
+    saveRelation: saveRelation,
+    editFromCard: editFromCard,
+    closeGraph: closeGraph,
+    closeModal: closeModal,
+    deletePerson: deletePerson,
+    confirmPerson: confirmPerson,
+    editFromMenu: editFromMenu,
+    deleteFromMenu: deleteFromMenu,
+    addTitleRow: addTitleRow,
+    retryPlaceSearch: retryPlaceSearch,
+    hintCoords: hintCoords,
+    backToRegion: backToRegion,
+    // 带参动作（元素自身携带 data-* 参数）
+    pickEmoji: function (el) { pickEmoji(el); },
+    removeTitleRow: function (el) { removeTitleRow(el); },
+    enterWorkspace: function (el) { enterWorkspace(el.dataset.id); },
+    deleteWorkspace: function (el) { deleteWorkspace(el.dataset.id); },
+    switchRegion: function (el) { switchRegion(el.dataset.id); },
+    deleteRegion: function (el) { deleteRegion(el.dataset.id); },
+    jumpToPerson: function (el) { jumpToPerson(el.dataset.id); },
+    flyToPlace: function (el) { flyToPlace(Number(el.dataset.i)); },
+    pickNewWsPlace: function (el) { pickNewWsPlace(Number(el.dataset.i)); },
+    deleteRelation: function (el) { deleteRelation(Number(el.dataset.i)); }
+};
+
+function dispatchAction(el, e) {
+    var fn = ACTIONS[el.getAttribute('data-act')];
+    if (fn) fn(el, e);
+}
+
 document.addEventListener('click', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-act]') : null;
+    if (el) dispatchAction(el, e);
     var m = document.getElementById('contextMenu');
     if (m && m.classList.contains('show') && !m.contains(e.target)) hideContextMenu();
     var sb = document.querySelector('.search-bar');
@@ -2775,8 +2776,48 @@ document.addEventListener('click', function (e) {
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
         if (draw.active) cancelDraw();
+        var modalOpen = document.getElementById('modal').classList.contains('show');
         hideDialog();
+        closeModal();
+        closeInfoCard();
+        closeGraph();
+        hideSearch();
+        hideContextMenu();
+        // 放置模式下（弹窗未开）Escape = 退出放置，否则会悬死在无墙状态且界面无提示
+        if (addMode && !modalOpen) {
+            addMode = false;
+            syncTileBounds(); /* 恢复瓦片范围 + 平移硬墙 */
+            toast('已退出放置模式');
+        }
+        return;
+    }
+    // role="button" 的 div 卡片（动态生成、外层带删除按钮无法用 <button> 包裹）：
+    // Enter / 空格触发，键盘可达。
+    // 注意守卫：焦点在原生控件（卡片内的删除按钮等）上时，回车/空格是它自己的
+    // 激活语义，若不拦住会冒泡命中外层卡片，造成"删除 + 进入"双重动作。
+    if (e.key === 'Enter' || e.key === ' ') {
+        var t = e.target;
+        if (t.closest && t.closest('button, a, input, select, textarea')) return;
+        var c = t.closest ? t.closest('[role="button"][data-act]') : null;
+        if (c) { e.preventDefault(); dispatchAction(c, e); }
     }
 });
+
+// 输入类事件改由 JS 绑定（替代原内联 oninput/onkeydown/onchange）
+document.getElementById('searchInput').addEventListener('input', function () { onSearch(this.value); });
+document.getElementById('wsPlaceInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') searchNewWsPlace();
+});
+document.getElementById('placeInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') searchPlaces();
+});
+document.getElementById('inputName').addEventListener('keydown', function (e) {
+    // 仅在人物弹窗打开时回车=确定，避免平时误触
+    if (e.key === 'Enter' && document.getElementById('modal').classList.contains('show')) {
+        e.preventDefault();
+        confirmPerson();
+    }
+});
+document.getElementById('importFile').addEventListener('change', function () { handleImport(this); });
 
 document.addEventListener('DOMContentLoaded', boot);
