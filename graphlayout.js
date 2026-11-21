@@ -1449,8 +1449,8 @@ var GraphLayout = (function () {
                 pCalcW(root);
             });
 
-            // 4) 扇区分配：组数均分 360°，每组扇区内按树权重展开
-            var step = R_TAU / groupKeys.length;
+            // 4) 扇区分配：按各地点人数加权（人多的扇区宽），而不是简单均分
+            //    先算每组在各圈的最大人数，决定该组需要的角度宽度
             function placeSubtree(id, center, span) {
                 info[id].angle = center;
                 info[id].angled = true;
@@ -1461,13 +1461,35 @@ var GraphLayout = (function () {
                 var cursor = center - span / 2;
                 kids.forEach(function (k) {
                     var share = total ? span * (pWeight[k] / total) : 0;
-                    placeSubtree(k, cursor + share / 2, Math.max(0.04, share));
+                    placeSubtree(k, cursor + share / 2, Math.max(0.02, share));
                     cursor += share;
                 });
             }
-            groupKeys.forEach(function (key, gi) {
-                var center = R_START + gi * step;
-                placeSubtree(groupRoots[key], center, step * 0.9);
+            // 每组需求 = 该组"人数最多的那一圈"的名框总宽 / 平均半径；再换算成角度份额
+            var groupDemand = {};
+            groupKeys.forEach(function (key) {
+                var ids = groups[key];
+                var byGen = {};
+                ids.forEach(function (id) {
+                    var g = info[id].gen == null ? 99 : info[id].gen;
+                    (byGen[g] = byGen[g] || []).push(info[id]);
+                });
+                var maxNeed = 1;
+                Object.keys(byGen).forEach(function (g) {
+                    var sum = 0;
+                    byGen[g].forEach(function (n) { sum += n.titleW + R_NODE_GAP; });
+                    if (sum > maxNeed) maxNeed = sum;
+                });
+                groupDemand[key] = maxNeed;
+            });
+            var totalDemand = 0;
+            groupKeys.forEach(function (key) { totalDemand += groupDemand[key]; });
+            var angleCursor = R_START;
+            groupKeys.forEach(function (key) {
+                var share = totalDemand ? R_TAU * (groupDemand[key] / totalDemand) : R_TAU / groupKeys.length;
+                var center = angleCursor + share / 2;
+                placeSubtree(groupRoots[key], center, share * 0.96);
+                angleCursor += share;
             });
         }
 
@@ -1588,7 +1610,7 @@ var GraphLayout = (function () {
             ids.forEach(function (id) { info[id].angle += bestOff; });
         }
         depths.forEach(function (d) {
-            if (d > 0) rotateRing(ringMap[d], d);
+            if (d > 0 && !groupByPlace) rotateRing(ringMap[d], d);
         });
 
         /* ---------- 5. 落坐标：方形画布，中心固定为「我」 ---------- */

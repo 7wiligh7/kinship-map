@@ -361,5 +361,37 @@ ok(tgf && tfa && tgf.r < tfa.r, '无关系边时树仍按辈分分层：爷爷(�
 ok(tfa && tfa2 && Math.abs(tfa.r - tfa2.r) < 1, '同辈（爸爸/叔叔）在同一环');
 ok(treeG.edges.some(function (e) { return e.kind === 'kin' && e.title === '爷爷'; }), '地点根（爷爷）仍连到「我」');
 
+// 多个地点时，同地点的人角度应聚在一起（不被旋转打乱），且整图不重叠
+var multiP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'm0', name: '15公', gender: 'm', age: null, titles: [], placeId: 'pA' },
+    { id: 'm1', name: '4爹', gender: 'm', age: null, titles: [], placeId: 'pA' },
+    { id: 'm2', name: '5爹', gender: 'm', age: null, titles: [], placeId: 'pA' },
+    { id: 'n0', name: '三公', gender: 'm', age: null, titles: [], placeId: 'pB' },
+    { id: 'n1', name: '9叔', gender: 'm', age: null, titles: [], placeId: 'pB' },
+    { id: 'n2', name: '10叔', gender: 'm', age: null, titles: [], placeId: 'pB' }
+];
+var multiG = radialPlaced(multiP, [], 'me');
+function angDist2(a, b) { var d = Math.abs(a - b) % (Math.PI * 2); return Math.min(d, Math.PI * 2 - d); }
+var mA = multiG.nodes.filter(function (n) { return n.placeId === 'pA' && n.name !== '15公'; });
+function groupSpan(arr) {
+    if (arr.length < 2) return 0;
+    var angs = arr.map(function (n) { return n.angle; }).sort(function (a, b) { return a - b; });
+    var maxGap = 0, prev = angs[0];
+    for (var i = 1; i < angs.length; i++) { maxGap = Math.max(maxGap, angs[i] - prev); prev = angs[i]; }
+    maxGap = Math.max(maxGap, angs[0] + Math.PI * 2 - prev); // 跨 0° 的间隔
+    return Math.PI * 2 - maxGap; // 跨度 = 整圈 - 最大空档
+}
+var spreadA = groupSpan(mA);
+ok(spreadA < Math.PI, '同地点(pA)的人应聚在一个扇区内（跨度 ' + (spreadA * 180 / Math.PI).toFixed(0) + '°）');
+function boxOf(n) { return { x: n.x - n.w / 2, y: n.y - n.h / 2, w: n.w, h: n.h }; }
+var ov = 0;
+for (var mi = 0; mi < multiG.nodes.length; mi++) for (var mj = mi + 1; mj < multiG.nodes.length; mj++) {
+    var ba = boxOf(multiG.nodes[mi]), bb = boxOf(multiG.nodes[mj]);
+    if (Math.min(ba.x + ba.w, bb.x + bb.w) > Math.max(ba.x, bb.x) + 0.01 &&
+        Math.min(ba.y + ba.h, bb.y + bb.h) > Math.max(ba.y, bb.y) + 0.01) ov++;
+}
+ok(ov === 0, '多地点树状图不应有名框重叠（实际 ' + ov + '）');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
