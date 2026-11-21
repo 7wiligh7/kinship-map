@@ -268,6 +268,41 @@ var Places = (function () {
         // 迁移来的地点人物坐标已归地点；清掉人物坐标避免两处打架
         d.persons.forEach(function (p) { p.lat = null; p.lng = null; });
 
+        // 合写称谓拆分：名字含「/」的（如 5爹/妈、公/婆）按段拆成多个人。
+        // 第一段沿用原人（保留 id/rootId/现有关系），其余段新建；相邻异性段之间自动建配偶关系。
+        // 幂等：只拆名字里还含「/」的人。
+        function genderOfWord(seg) {
+            if (/[爹公叔伯爷舅哥弟]/.test(seg)) return 'm';
+            if (/[妈婆娘婶姨奶姐妹]/.test(seg)) return 'f';
+            return '';
+        }
+        var splitPairs = [];
+        d.persons.slice().forEach(function (p) {
+            if (typeof p.name !== 'string' || p.name.indexOf('/') < 0) return;
+            var segs = p.name.split('/').map(function (s) { return s.trim(); }).filter(Boolean);
+            if (segs.length < 2) return;
+            p.name = segs[0];
+            if (!p.gender) p.gender = genderOfWord(segs[0]);
+            var prev = p;
+            for (var si = 1; si < segs.length; si++) {
+                var np = addPerson(d, {
+                    name: segs[si], gender: genderOfWord(segs[si]), age: null,
+                    titles: [], placeId: p.placeId
+                });
+                splitPairs.push([prev, np]);
+                prev = np;
+            }
+        });
+        // 拆出的相邻段若一男一女，自动建配偶关系（5爹↔5妈、公↔婆）
+        splitPairs.forEach(function (pair) {
+            var a = pair[0], b = pair[1];
+            if (!a.gender || !b.gender || a.gender === b.gender) return;
+            var exists = (d.relations || []).some(function (r) {
+                return (r.from === a.id && r.to === b.id) || (r.from === b.id && r.to === a.id);
+            });
+            if (!exists) d.relations.push({ from: a.id, to: b.id, type: '配偶' });
+        });
+
         var ids = {};
         d.persons.forEach(function (p) { ids[p.id] = true; });
         d.relations = d.relations.filter(function (r) {

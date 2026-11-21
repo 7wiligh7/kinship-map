@@ -194,4 +194,35 @@ ok(d11.places.length === 1 && d11.places[0].name === '爷爷奶奶家' && d11.pl
     'places 经导入规范化后保留名称与坐标');
 ok(d11.persons[0].placeId === 'pl1', '人物仍挂回原地点');
 
+/* ---------- 合写称谓拆分：名字含 / 拆成多个人，按词定性别，建配偶，幂等 ---------- */
+var combo = Places.normalize({
+    version: 3,
+    places: [{ id: 'cp', name: 'C', lat: 1, lng: 2 }],
+    persons: [
+        { id: 'cme', name: '我', gender: 'm', age: null, titles: [], placeId: 'cp' },
+        { id: 'c5', name: '5爹/妈', gender: '', age: null, titles: [], placeId: 'cp' },
+        { id: 'cgp', name: '公/婆', gender: '', age: null, titles: [], placeId: 'cp' }
+    ],
+    relations: [], rootId: 'cme', regions: [], activeRegionId: null
+});
+var c5p = Places.findPerson(combo, 'c5');
+var cMa = combo.persons.filter(function (p) { return p.name === '妈'; })[0];
+var cGong = Places.findPerson(combo, 'cgp');
+var cPo = combo.persons.filter(function (p) { return p.name === '婆'; })[0];
+ok(!!c5p && c5p.name === '5爹' && c5p.gender === 'm', '5爹/妈 拆出 5爹（男，保留排行前缀）');
+ok(!!cMa && cMa.gender === 'f', '拆出 妈（女）');
+ok(!!cGong && cGong.name === '公' && cGong.gender === 'm', '公/婆 拆出 公（男）');
+ok(!!cPo && cPo.gender === 'f', '拆出 婆（女）');
+function spouseExists(a, b) {
+    return combo.relations.some(function (r) {
+        return r.type === '配偶' && ((r.from === a.id && r.to === b.id) || (r.from === b.id && r.to === a.id));
+    });
+}
+ok(c5p && cMa && spouseExists(c5p, cMa), '5爹 与 妈 自动建配偶关系');
+ok(cGong && cPo && spouseExists(cGong, cPo), '公 与 婆 自动建配偶关系');
+ok(combo.rootId === 'cme', '拆分后 rootId 保持不变');
+var comboCount = combo.persons.length;
+var again = Places.normalize(JSON.parse(JSON.stringify(combo)));
+ok(again.persons.length === comboCount, '重复 normalize 不重复拆分（幂等）');
+
 console.log('pass=' + pass + ' fail=' + fail);

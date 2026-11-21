@@ -8,7 +8,7 @@
     <title>亲属关系地图</title>
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🗺️</text></svg>">
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.75" />
+    <link rel="stylesheet" href="style.css?v=1.76" />
 
     <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
     <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
@@ -133,7 +133,7 @@
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.7 · 构建 1.75（自动补齐关系网 · 同辈按排行定长幼与排序）</span>
+                <span class="version">v2.7 · 构建 1.76（关系图显示优化 · 关系独立编辑 · 称谓定世）</span>
 
             </div>
         </div>
@@ -170,6 +170,33 @@
             </div>
         </div>
 
+        <!-- 新增/编辑关系：独立窗口，和编辑地点一样 -->
+        <div class="modal" id="relModal" role="dialog" aria-modal="true" aria-labelledby="relModalTitle">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <span class="modal-title" id="relModalTitle">添加关系</span>
+                </div>
+
+                <div class="form-group">
+                    <label class="label">关系</label>
+                    <div class="rel-line">
+                        <select id="relFrom" aria-label="关系主体"></select>
+                        <span>是</span>
+                        <select id="relTo" aria-label="关系客体"></select>
+                        <span>的</span>
+                    </div>
+                    <div class="rel-line">
+                        <select id="relType" aria-label="关系类型"></select>
+                    </div>
+                </div>
+
+                <div class="modal-buttons">
+                    <button type="button" class="btn-cancel" data-act="hideRelForm">取消</button>
+                    <button type="button" class="btn-confirm" id="relSaveBtn" data-act="saveRelation">添加</button>
+                </div>
+            </div>
+        </div>
+
         <div class="context-menu" id="contextMenu">
             <button type="button" class="context-menu-item" data-act="editFromMenu">编辑</button>
             <button type="button" class="context-menu-item delete" data-act="deleteFromMenu">删除</button>
@@ -190,20 +217,6 @@
 
             <div class="rel-list-title">人物关系</div>
             <div id="relList"></div>
-
-            <div class="rel-form" id="relForm">
-                <div class="rel-line">
-                    <select id="relFrom" aria-label="关系主体"></select>
-                    <span>是</span>
-                    <select id="relTo" aria-label="关系客体"></select>
-                    <span>的</span>
-                </div>
-                <div class="rel-line">
-                    <select id="relType" aria-label="关系类型"></select>
-                    <button type="button" class="btn-confirm btn-small" data-act="saveRelation">添加</button>
-                    <button type="button" class="btn-cancel btn-small" data-act="hideRelForm">取消</button>
-                </div>
-            </div>
 
             <div class="info-card-buttons">
                 <button type="button" class="btn-cancel" data-act="closeInfoCard">关闭</button>
@@ -241,12 +254,12 @@
     </div>
 
     <!-- defer 保持相对顺序；事件均经 app.js 的事件委托分发（见 ACTIONS），无内联 handler -->
-    <script defer src="config.js?v=1.75"></script>
+    <script defer src="config.js?v=1.76"></script>
     <script defer src="geocode.js?v=1.21"></script>
-    <script defer src="kinship.js?v=1.75"></script>
-    <script defer src="tilecache.js?v=1.75"></script>
-    <script defer src="places.js?v=1.75"></script>
-    <script defer src="graphlayout.js?v=1.75"></script>
-    <script defer src="app.js?v=1.75"></script>
+    <script defer src="kinship.js?v=1.76"></script>
+    <script defer src="tilecache.js?v=1.76"></script>
+    <script defer src="places.js?v=1.76"></script>
+    <script defer src="graphlayout.js?v=1.76"></script>
+    <script defer src="app.js?v=1.76"></script>
 </body>
 </html>

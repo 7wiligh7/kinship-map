@@ -567,6 +567,9 @@ function initMap() {
         if (!map) return;
         map.invalidateSize();
         syncMapPan(); // 视口尺寸变了，缩放下限要重算
+        if (document.getElementById('graphPanel') && document.getElementById('graphPanel').classList.contains('show')) {
+            renderGraph(); // 屏幕宽度变了，一行能放几人重算
+        }
     }
     window.addEventListener('resize', onViewportChange);
     window.addEventListener('orientationchange', onViewportChange); // 手机转屏
@@ -2224,6 +2227,7 @@ function addPlace() {
 
 // 打开地点弹窗（新增 / 编辑）：地点信息 + 该地点的称谓条目（姓名/性别/年龄）都在这里
 function openPlaceModal(placeId, latlng) {
+    hideRelForm(); // 两个独立窗口互斥
     state.editingPlaceId = placeId || null;
     pendingLatLng = latlng || null;
     var pl = placeId ? Places.findPlace(state.data, placeId) : null;
@@ -2575,7 +2579,7 @@ function openPlaceCard(placeId) {
     document.getElementById('infoTitles').textContent = pl.note || '';
     renderPlacePeople(placeId);
     renderRelList(placeId);
-    document.getElementById('relForm').classList.remove('show');
+    document.getElementById('relModal').classList.remove('show');
     document.getElementById('infoCard').classList.add('show');
 }
 
@@ -2719,7 +2723,8 @@ function renderRelList(placeId) {
     }
     box.innerHTML = rels.map(function (r) {
         var idx = state.data.relations.indexOf(r);
-        return '<div class="rel-item"><span class="rel-sentence">' +
+        return '<div class="rel-item"><span class="rel-sentence" data-act="editRelation" data-i="' +
+            idx + '" title="点击编辑关系">' +
             esc(personName(r.from)) + ' 是 ' + esc(personName(r.to)) + ' 的 ' + esc(r.type) +
             '</span><span class="rel-actions">' +
             '<button type="button" class="rel-btn" data-act="jumpToPerson" data-id="' + esc(r.from) + '">定位</button>' +
@@ -2752,9 +2757,12 @@ function deleteRelation(idx) {
     if (state.selectedId) openPlaceCard(state.selectedId);
 }
 
-function showRelForm() {
+function showRelForm(idx) {
+    closePlaceModal(); // 两个独立窗口互斥
     var placeId = state.selectedId;
     if (!placeId) return;
+    var editing = Number.isInteger(idx) && idx >= 0 && state.data.relations[idx];
+    state.relEditingIdx = editing ? idx : null;
     var fromSel = document.getElementById('relFrom');
     var toSel = document.getElementById('relTo');
     var typeSel = document.getElementById('relType');
@@ -2764,26 +2772,45 @@ function showRelForm() {
     }).join('');
     fromSel.innerHTML = opts;
     toSel.innerHTML = opts;
-    // 默认：优先用当前地点里的两个人物
-    var here = Places.peopleAt(state.data, placeId);
-    if (here.length) fromSel.value = here[0].id;
-    var other = null;
-    if (here.length > 1) {
-        other = here[1];
+    // 编辑：预填这条关系的两端与类型；新增：优先用当前地点里的两个人物
+    if (editing) {
+        fromSel.value = state.data.relations[idx].from;
+        toSel.value = state.data.relations[idx].to;
     } else {
-        state.data.persons.forEach(function (p) { if (!other && p.id !== fromSel.value) other = p; });
+        var here = Places.peopleAt(state.data, placeId);
+        if (here.length) fromSel.value = here[0].id;
+        var other = null;
+        if (here.length > 1) {
+            other = here[1];
+        } else {
+            state.data.persons.forEach(function (p) { if (!other && p.id !== fromSel.value) other = p; });
+        }
+        if (other) toSel.value = other.id;
     }
-    if (other) toSel.value = other.id;
     typeSel.innerHTML = Kinship.TYPE_GROUPS.map(function (g) {
         return '<optgroup label="' + esc(g.group) + '">' +
             g.types.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('') +
             '</optgroup>';
     }).join('');
-    document.getElementById('relForm').classList.add('show');
+    if (editing) typeSel.value = state.data.relations[idx].type;
+    var saveBtn = document.getElementById('relSaveBtn');
+    if (saveBtn) saveBtn.textContent = editing ? '保存' : '添加';
+    var titleEl = document.getElementById('relModalTitle');
+    if (titleEl) titleEl.textContent = editing ? '编辑关系' : '添加关系';
+    document.getElementById('relModal').classList.add('show');
+}
+
+function editRelation(idx) {
+    showRelForm(idx);
 }
 
 function hideRelForm() {
-    document.getElementById('relForm').classList.remove('show');
+    state.relEditingIdx = null;
+    var saveBtn = document.getElementById('relSaveBtn');
+    if (saveBtn) saveBtn.textContent = '添加';
+    var titleEl = document.getElementById('relModalTitle');
+    if (titleEl) titleEl.textContent = '添加关系';
+    document.getElementById('relModal').classList.remove('show');
 }
 
 function saveRelation() {
@@ -2792,17 +2819,23 @@ function saveRelation() {
     var type = document.getElementById('relType').value;
     if (!from || !to) { toast('请选择人物'); return; }
     if (from === to) { toast('不能和自己建立关系'); return; }
-    var dup = state.data.relations.some(function (r) {
-        return r.from === from && r.to === to && r.type === type;
+    var idx = state.relEditingIdx;
+    var editing = Number.isInteger(idx) && idx >= 0 && state.data.relations[idx];
+    var dup = state.data.relations.some(function (r, i) {
+        return i !== idx && r.from === from && r.to === to && r.type === type;
     });
     if (dup) { toast('该关系已存在'); return; }
-    state.data.relations.push({ from: from, to: to, type: type });
+    if (editing) {
+        state.data.relations[idx] = { from: from, to: to, type: type };
+    } else {
+        state.data.relations.push({ from: from, to: to, type: type });
+    }
     saveData();
     renderAll(false);
     markUserModified();
     hideRelForm();
     if (state.selectedId) openPlaceCard(state.selectedId);
-    toast('已添加关系');
+    toast(editing ? '已修改关系' : '已添加关系');
 }
 
 /* ===== import / export / clear ===== */
@@ -3004,7 +3037,10 @@ function renderGraph() {
         persons: state.data.persons,
         relations: state.data.relations,
         labels: k.labels,
-        rootId: rootId
+        places: state.data.places || [],
+        rootId: rootId,
+        wrap: true,
+        panelWidth: body.clientWidth || 0
     });
     if (!g.nodes.length) {
         body.innerHTML = '<div class="graph-empty">还没有可排布的人物</div>';
@@ -3013,21 +3049,36 @@ function renderGraph() {
     function r1(v) { return Math.round(v * 10) / 10; }
 
     var parts = [];
-    // 世系参考线：每世一条淡虚线 + 左侧「第几世」
+    // 世系参考线：每个物理行一条淡虚线 + 左侧「第几世」
     g.rows.forEach(function (row) {
-        var y = r1(row.y + 18);
-        parts.push('<line class="g-gen-tick" x1="' + (GraphLayout.LEFT_W + 6) + '" y1="' + y +
-            '" x2="' + r1(g.width - 12) + '" y2="' + y + '"></line>');
-        parts.push('<text class="g-gen-label' + (row.isRootRow ? ' root' : '') + '" x="' +
-            (GraphLayout.LEFT_W - 8) + '" y="' + r1(row.y + 23) + '" text-anchor="end">' +
-            esc(row.label) + '</text>');
-        if (row.isRootRow) {
-            parts.push('<text class="g-gen-me" x="' + (GraphLayout.LEFT_W - 8) + '" y="' +
-                r1(row.y + 39) + '" text-anchor="end">我</text>');
+        (row.ys || [row.y]).forEach(function (y, yi) {
+            var ly = r1(y + 18);
+            parts.push('<line class="g-gen-tick" x1="' + (GraphLayout.LEFT_W + 6) + '" y1="' + ly +
+                '" x2="' + r1(g.width - 12) + '" y2="' + ly + '"></line>');
+            if (yi === 0) {
+                parts.push('<text class="g-gen-label' + (row.isRootRow ? ' root' : '') + '" x="' +
+                    (GraphLayout.LEFT_W - 8) + '" y="' + r1(y + 23) + '" text-anchor="end">' +
+                    esc(row.label) + '</text>');
+                if (row.isRootRow) {
+                    parts.push('<text class="g-gen-me" x="' + (GraphLayout.LEFT_W - 8) + '" y="' +
+                        r1(y + 39) + '" text-anchor="end">我</text>');
+                }
+            }
+        });
+    });
+
+    // 地点分组大框：同一世、同一地点的人圈在一起（画在世线之上、连线/名框之下）
+    g.groups.forEach(function (gp) {
+        parts.push('<rect class="g-group" x="' + r1(gp.x) + '" y="' + r1(gp.y) +
+            '" width="' + r1(gp.w) + '" height="' + r1(gp.h) + '" rx="12"></rect>');
+        if (gp.label) {
+            parts.push('<text class="g-group-label" x="' + r1(gp.x + 8) + '" y="' +
+                r1(gp.y + 12) + '">' + esc(gp.label) + '</text>');
         }
     });
 
-    // 关系线：父母→子女的下垂线/兄弟横杆、夫妻婚线、旁系连线
+    // 关系线：父母→子女的下垂线/兄弟横杆、夫妻婚线保持醒目；
+    // 旁系/兄弟姐妹线默认变淡（g-edge-dim），悬停高亮时恢复
     g.edges.forEach(function (e) {
         var ri = esc(e.ris.join(' '));
         if (e.kind === 'descent') {
@@ -3038,17 +3089,18 @@ function renderGraph() {
                 '" y1="' + r1(e.y1) + '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '">' +
                 '<title>配偶</title></line>');
         } else if (e.d) {
-            parts.push('<path class="g-edge" data-ri="' + ri + '" d="' + e.d + '">' +
+            parts.push('<path class="g-edge g-edge-dim" data-ri="' + ri + '" d="' + e.d + '">' +
                 '<title>' + esc(e.title) + '</title></path>');
         } else {
-            parts.push('<line class="g-edge" data-ri="' + ri + '" x1="' + r1(e.x1) + '" y1="' + r1(e.y1) +
+            parts.push('<line class="g-edge g-edge-dim" data-ri="' + ri + '" x1="' + r1(e.x1) + '" y1="' + r1(e.y1) +
                 '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '"><title>' + esc(e.title) + '</title></line>');
         }
     });
 
-    // 关系文字（已做过避让，带背景色描边，压线也能看清）
+    // 关系文字（已做过避让，带背景色描边，压线也能看清；旁系的默认变淡）
     g.labels.forEach(function (l) {
-        parts.push('<text class="g-edge-label" data-ri="' + esc(l.ris.join(' ')) + '" x="' + r1(l.x) +
+        parts.push('<text class="g-edge-label' + (l.dim ? ' g-label-dim' : '') +
+            '" data-ri="' + esc(l.ris.join(' ')) + '" x="' + r1(l.x) +
             '" y="' + r1(l.y) + '" text-anchor="' + l.anchor + '">' + esc(l.text) + '</text>');
     });
 
@@ -3066,6 +3118,7 @@ function renderGraph() {
             '</g>');
     });
 
+    // 自适应折行由布局层完成，这里按实际尺寸绘制，不再整体缩放（避免文字过小）
     body.innerHTML = '<svg class="graph-svg" width="' + g.width + '" height="' + g.height +
         '" viewBox="0 0 ' + g.width + ' ' + g.height + '">' + parts.join('') + '</svg>';
     var svg = body.querySelector('svg');
@@ -3201,9 +3254,10 @@ var ACTIONS = {
     clearAll: clearAll,
     showStartup: showStartup,
     closeInfoCard: closeInfoCard,
-    showRelForm: showRelForm,
+    showRelForm: function () { showRelForm(null); },
     hideRelForm: hideRelForm,
     saveRelation: saveRelation,
+    editRelation: function (el) { editRelation(Number(el.dataset.i)); },
     editFromCard: editFromCard,
     closeGraph: closeGraph,
     editFromMenu: editFromMenu,
@@ -3245,6 +3299,7 @@ document.addEventListener('keydown', function (e) {
         var modalOpen = document.getElementById('placeModal').classList.contains('show');
         hideDialog();
         closePlaceModal();
+        hideRelForm();
         closeInfoCard();
         closeGraph();
         hideSearch();

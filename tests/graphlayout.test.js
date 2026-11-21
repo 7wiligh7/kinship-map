@@ -8,8 +8,11 @@ var GraphLayout = require(path.join(__dirname, '..', 'graphlayout.js'));
 var pass = 0, fail = 0;
 function ok(cond, msg) { if (cond) { pass++; } else { fail++; console.log('FAIL: ' + msg); } }
 
-function person(id, name, gender) {
-    return { id: id, name: name, gender: gender || '', age: null, titles: [], placeId: 'pl1' };
+function person(id, name, gender, placeId) {
+    return {
+        id: id, name: name, gender: gender || '', age: null, titles: [],
+        placeId: placeId === undefined ? 'pl1' : placeId
+    };
 }
 function rel(from, to, type) { return { from: from, to: to, type: type }; }
 
@@ -310,6 +313,183 @@ var ur = layoutOf([person('u1', '24公'), person('u2', '23公'), person('me', '�
 var nu1 = nodeOf(ur, 'u1'), nu2 = nodeOf(ur, 'u2');
 ok(!!nu1 && !!nu2 && nu2.x < nu1.x,
     '未连通的也按排行排：23公 应在 24公 左边（' + (nu2 ? nu2.x : '?') + ' vs ' + (nu1 ? nu1.x : '?') + '）');
+
+/* ---------- 地点分组大框：同一世、同一地点的人圈进一个框 ---------- */
+function layoutWithPlaces(persons, relations, rootId, places) {
+    var k = Kinship.compute(rootId, persons, relations);
+    return GraphLayout.layout({
+        persons: persons, relations: relations, labels: k.labels,
+        places: places || [], rootId: rootId
+    });
+}
+function groupOf(g, id) {
+    var n = nodeOf(g, id);
+    if (!n) return null;
+    // 节点 x 是名框中心，比较时换算成左右边界
+    return (g.groups || []).filter(function (gp) {
+        return n.x - n.w / 2 >= gp.x - 0.01 && n.x + n.w / 2 <= gp.x + gp.w + 0.01 &&
+            n.y >= gp.y - 0.01 && n.y + g.boxH <= gp.y + gp.h + 0.01;
+    })[0] || null;
+}
+function sameGroup(g, a, b) {
+    var ga = groupOf(g, a), gb = groupOf(g, b);
+    return !!ga && ga === gb;
+}
+
+var gpA = person('ga', '甲哥', 'm', 'pA'), gpB = person('gb', '乙弟', 'm', 'pA');
+var gpC = person('gc', '丙哥', 'm', 'pB');
+var ggMe = person('gme', '我', 'm', 'pA');
+var gg = layoutWithPlaces([
+    gpA, gpB, gpC, ggMe
+], [
+    rel('ga', 'gme', '哥哥'), rel('gb', 'gme', '弟弟'), rel('gc', 'gme', '哥哥')
+], 'gme', [{ id: 'pA', name: '甲村' }, { id: 'pB', name: '乙村' }]);
+
+ok(!!g.groups, '布局应返回 groups 分组框');
+ok(sameGroup(gg, 'ga', 'gb'), '同一世 + 同一地点（甲村）应圈进同一个大框');
+ok(!sameGroup(gg, 'ga', 'gc'), '同一世但不同地点（甲村/乙村）不应同框');
+var gGa = groupOf(gg, 'ga'), gGc = groupOf(gg, 'gc');
+ok(!!gGa && gGa.label === '甲村', '甲村的框应带「甲村」标签（实际 ' + (gGa ? gGa.label : '无框') + '）');
+ok(!!gGc && gGc.label === '乙村', '乙村的框应带「乙村」标签（实际 ' + (gGc ? gGc.label : '无框') + '）');
+ok(!!gGa && !!gGc && gGa.x + gGa.w <= gGc.x + 0.01,
+    '同辈按地点聚拢：甲村的框整体在乙村左边（' + (gGa ? gGa.x + gGa.w : '?') + ' vs ' + (gGc ? gGc.x : '?') + '）');
+ok(!!gGa && gg.nodes.filter(function (n) { return n.placeId === 'pA' && n.gen != null; })
+    .every(function (n) { return n.x - n.w / 2 >= gGa.x && n.x + n.w / 2 <= gGa.x + gGa.w; }),
+    '甲村框应完整包住甲村同世的人');
+
+// 夫妻来自不同地点：各归各的框，婚线跨框
+var swMe = person('sme', '我', 'm', 'pA'), swW = person('sw', '媳妇', 'f', 'pB');
+var swSon = person('sson', '儿子', 'm', 'pA');
+var gw = layoutWithPlaces([swMe, swW, swSon], [
+    rel('sme', 'sw', '配偶'), rel('sme', 'sson', '父亲')
+], 'sme', [{ id: 'pA', name: '甲村' }, { id: 'pB', name: '乙村' }]);
+var gMe = groupOf(gw, 'sme'), gW = groupOf(gw, 'sw');
+ok(!!gMe && !!gW && gMe !== gW,
+    '夫妻跨地点应各归各的地点框（实际 ' + (gMe ? gMe.label : '无') + ' / ' + (gW ? gW.label : '无') + '）');
+ok(!!gMe && gMe.label === '甲村' && !!gW && gW.label === '乙村',
+    '我（甲村）与媳妇（乙村）应分别进甲村/乙村框');
+
+// 没挂地点的人不进任何框
+var npMe = person('nme', '我', 'm', null), npU = person('nu', '表叔', 'm', null);
+var gn = layoutWithPlaces([npMe, npU], [rel('npU', 'nme', '表叔')], 'nme', []);
+ok((gn.groups || []).length === 0, '没挂地点的人不应产生分组框（实际 ' + (gn.groups || []).length + '）');
+
+/* ---------- 折行（wrap）：人多时一个世排成多行，整图尽量正方形 ---------- */
+var many = [person('wme', '我', 'm')];
+var manyR = [];
+for (var wi = 1; wi <= 12; wi++) {
+    many.push(person('wb' + wi, '兄弟' + wi, 'm', 'pA'));
+    manyR.push(rel('wb' + wi, 'wme', '哥哥'));
+}
+function layoutWrap(ps, rs, rootId, wrap) {
+    var kk = Kinship.compute(rootId, ps, rs);
+    return GraphLayout.layout({
+        persons: ps, relations: rs, labels: kk.labels, rootId: rootId, wrap: wrap
+    });
+}
+var gwOff = layoutWrap(many, manyR, 'wme', false);
+var gwOn = layoutWrap(many, manyR, 'wme', true);
+var rowNodesOn = gwOn.nodes.filter(function (n) { return n.id !== 'wme'; });
+var distinctY = {};
+rowNodesOn.forEach(function (n) { distinctY[n.y] = true; });
+ok(Object.keys(distinctY).length > 1,
+    '折行开启后，同世 12 兄弟应分到多个物理行（实际 ' + Object.keys(distinctY).length + ' 行）');
+ok(gwOn.height > gwOff.height, '折行让图变高（' + gwOff.height + ' → ' + gwOn.height + '）');
+ok(gwOn.width < gwOff.width, '折行让图变窄（' + gwOff.width + ' → ' + gwOn.width + '）');
+// 尽量正方形：折行后宽高比应比折行前更接近 1
+var ratioOff = Math.max(gwOff.width / gwOff.height, gwOff.height / gwOff.width);
+var ratioOn = Math.max(gwOn.width / gwOn.height, gwOn.height / gwOn.width);
+ok(ratioOn < ratioOff, '折行后整图更接近正方形（比例 ' + ratioOff.toFixed(2) + ' → ' + ratioOn.toFixed(2) + '）');
+ok(gwOn.nodes.length === gwOff.nodes.length, '折行不应丢人');
+ok(gwOn.rows.every(function (r) { return Array.isArray(r.ys) && r.ys.length >= 1; }),
+    '折行后每世带 ys 物理行列表');
+
+// 去横杆：父母分叉到每个子女，水平段各自独立、高度错开（不叠成一根贯穿横杆）
+var forkP = [person('fme', '我', 'm'), person('ffa', '父亲', 'm'),
+    person('fb1', '大伯', 'm'), person('fb2', '二伯', 'm'), person('fgf', '爷爷', 'm')];
+var forkR = [rel('ffa', 'fme', '父亲'), rel('fb1', 'fme', '伯父'), rel('fb2', 'fme', '伯父'),
+    rel('fgf', 'fb1', '父亲'), rel('fgf', 'fb2', '父亲')];
+var gfK = Kinship.compute('fme', forkP, forkR);
+var gfG = GraphLayout.layout({ persons: forkP, relations: forkR, labels: gfK.labels, rootId: 'fme' });
+var forkEdge = gfG.edges.filter(function (e) {
+    return e.kind === 'descent' && e.ris.length >= 2;
+})[0];
+ok(!!forkEdge, '有两个子女的父母组合应有一条下垂边');
+if (forkEdge) {
+    var hYs = [];
+    var hRe = /H(-?\d+(?:\.\d+)?)/g, hm;
+    // H 段前的 V 值即该分叉的水平段高度：从 "M x y H x V" 里取 y
+    var segRe = /M(-?[\d.]+) (-?[\d.]+)H(-?[\d.]+)V/g, sm;
+    while ((sm = segRe.exec(forkEdge.d))) hYs.push(Number(sm[2]));
+    ok(hYs.length >= 2 && hYs[0] !== hYs[1],
+        '每个子女一条分叉线，水平段高度错开、不叠成一根横杆（实际 ' + JSON.stringify(hYs) + '）');
+}
+
+// 同父母的一大排同辈人：不应因「一家人同行」被锁死在一行，同一地点人多就折行
+var famP = [person('fme', '我', 'm'), person('fgf2', '爷爷', 'm')], famR = [rel('fgf2', 'fme', '父亲')];
+for (var fi = 1; fi <= 12; fi++) {
+    famP.push(person('fs' + fi, '兄弟' + fi, 'm', 'pA'));
+    famR.push(rel('fgf2', 'fs' + fi, '父亲'));
+}
+var famK = Kinship.compute('fme', famP, famR);
+var famG = GraphLayout.layout({ persons: famP, relations: famR, labels: famK.labels, rootId: 'fme', wrap: true });
+var sibYs = {};
+famG.nodes.filter(function (n) { return n.id.indexOf('fs') === 0; }).forEach(function (n) { sibYs[n.y] = 1; });
+ok(Object.keys(sibYs).length >= 2,
+    '同一地点 12 个同父母兄弟应折成多行（实际 ' + Object.keys(sibYs).length + ' 行）');
+ok(famG.groups.length >= 2, '折行后同一地点应有多行分组框（实际 ' + famG.groups.length + ' 个）');
+
+// 宽度适应屏幕：给 panelWidth 时每行数量按宽度算，图宽不超过面板
+var scrP = [person('sme', '我', 'm')], scrR = [];
+for (var si = 1; si <= 16; si++) {
+    scrP.push(person('ss' + si, '同辈' + si, 'm', 'pA'));
+    scrR.push(rel('ss' + si, 'sme', '哥哥'));
+}
+var scrK = Kinship.compute('sme', scrP, scrR);
+var scrG = GraphLayout.layout({ persons: scrP, relations: scrR, labels: scrK.labels,
+    rootId: 'sme', wrap: true, panelWidth: 800 });
+var scrSib = scrG.nodes.filter(function (n) { return n.id.indexOf('ss') === 0; });
+var scrYs = {};
+scrSib.forEach(function (n) { scrYs[n.y] = 1; });
+ok(Object.keys(scrYs).length > 1, 'panelWidth=800 时 16 同辈应折成多行（实际 ' + Object.keys(scrYs).length + '）');
+// 每行内节点的横向跨度应小于面板宽度（留边）
+var maxSpan = 0;
+Object.keys(scrYs).forEach(function (y) {
+    var row = scrSib.filter(function (n) { return n.y === Number(y); });
+    if (!row.length) return;
+    var lo = Math.min.apply(null, row.map(function (n) { return n.x - n.w / 2; }));
+    var hi = Math.max.apply(null, row.map(function (n) { return n.x + n.w / 2; }));
+    maxSpan = Math.max(maxSpan, hi - lo);
+});
+ok(maxSpan <= 800, '每行节点跨度不超过面板宽度（实际 ' + maxSpan.toFixed(0) + '）');
+
+// 称谓定世兜底：关系边把"大婆"连错成平辈，也要靠称谓把她放回祖辈一世
+var dpP = [person('dme', '我', 'm'), person('dfa', '父亲', 'm'), person('ddp', '大婆', 'f')];
+dpP[2].titles = ['大婆'];
+var dpR = [rel('dfa', 'dme', '父亲'), rel('ddp', 'dme', '表亲')];
+var dpK = Kinship.compute('dme', dpP, dpR);
+var dpG = GraphLayout.layout({ persons: dpP, relations: dpR, labels: dpK.labels, rootId: 'dme' });
+ok(rowOf(dpG, 'ddp').label === '一世',
+    '称谓定世：titles 写「大婆」的人应被放回一世（实际 ' + rowOf(dpG, 'ddp').label + '）');
+ok(rowOf(dpG, 'dfa').label === '二世', '父亲仍在二世');
+
+// 曾祖辈称谓也归一世：关系链把"曾祖父"算成 -3（曾祖辈），兜底拉回 -2 与大婆同在一世
+var zpP = [person('zme', '我', 'm'), person('zgf', '爷爷', 'm'), person('zz1', '14公', 'm')];
+var zpR = [rel('zgf', 'zme', '爷爷'), rel('zz1', 'zgf', '父亲')];
+var zpK = Kinship.compute('zme', zpP, zpR);
+var zpG = GraphLayout.layout({ persons: zpP, relations: zpR, labels: zpK.labels, rootId: 'zme' });
+ok(rowOf(zpG, 'zz1').label === '一世',
+    '称谓定世：称谓「曾祖父」应归一世、与大婆同辈（实际 ' + rowOf(zpG, 'zz1').label + '）');
+
+// 名字关键字定世：称谓是 name 原值（15公/三叔）算不出代数时，用关键字定世
+var ngP = [person('nme', '我', 'm'), person('ng1', '15公', 'm'), person('ng2', '三叔', 'm'), person('ng3', '大婆', 'f')];
+var ngR = [rel('ng1', 'nme', '15公'), rel('ng2', 'nme', '三叔'), rel('ng3', 'nme', '大婆')];
+var ngK = Kinship.compute('nme', ngP, ngR);
+var ngG = GraphLayout.layout({ persons: ngP, relations: ngR, labels: ngK.labels, rootId: 'nme' });
+ok(rowOf(ngG, 'ng1').label === '一世', '名字含「公」定世为一世（实际 ' + rowOf(ngG, 'ng1').label + '）');
+ok(rowOf(ngG, 'ng2').label === '二世', '名字含「叔」定世为二世（实际 ' + rowOf(ngG, 'ng2').label + '）');
+ok(rowOf(ngG, 'ng3').label === '一世', '名字含「婆」定世为一世（实际 ' + rowOf(ngG, 'ng3').label + '）');
+ok(rowOf(ngG, 'nme').label === '三世', '我仍是三世');
 
 console.log('pass=' + pass + ' fail=' + fail);
 process.exit(fail ? 1 : 0);

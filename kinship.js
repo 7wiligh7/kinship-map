@@ -38,6 +38,8 @@
   // 其余晚辈（儿子/女儿/侄子/侄女/外甥/外甥女）仍是下一辈（+1）。
   var TYPE_DELTA = {
     '爷爷': -2, '奶奶': -2, '外公': -2, '外婆': -2,
+    // 大婆 = 爷爷辈里最大的那位（奶奶）：同为祖辈上两代
+    '大婆': -2,
     '孙子': 2, '孙女': 2, '外孙': 2, '外孙女': 2
   };
 
@@ -70,7 +72,7 @@
   var TERMS = {
     /* 祖辈 */
     '爷爷': { alias: ['祖父', '阿公'] },
-    '奶奶': { alias: ['祖母', '阿婆'] },
+    '奶奶': { alias: ['祖母', '阿婆', '大婆'] },
     '外公': { alias: ['外祖父', '姥爷', '外爷'] },
     '外婆': { alias: ['外祖母', '姥姥', '姥娘'] },
     '伯祖': { alias: ['伯祖父', '伯公', '大爷爷'] },
@@ -84,9 +86,10 @@
     '外舅祖父': { alias: ['外舅公', '舅姥爷'] },
     '外姨祖母': { alias: ['外姨婆', '姨姥姥'] },
     /* 父辈 */
-    '父亲': { alias: ['爸爸', '爹', '爸'] },
+    '父亲': { alias: ['爸爸', '爸'] },
     '母亲': { alias: ['妈妈', '娘', '妈'] },
-    '伯父': { alias: ['伯伯', '大伯', '大爷'] },
+    // 本项目家族：父亲这边按和父亲比的排行叫——「爹」=父亲的哥哥(伯父)，不是直系父亲
+    '伯父': { alias: ['伯伯', '大伯', '大爷', '爹'] },
     '叔父': { alias: ['叔叔', '叔'] },
     '姑姑': { alias: ['姑妈', '姑母'] },
     '舅舅': { alias: ['舅父', '舅'] },
@@ -519,7 +522,7 @@
 
   /* ===== 夫妻互称：关系从哪一侧录入，都能认出另一半 ===== */
   var COUPLES = [
-    ['爷爷', '奶奶'], ['外公', '外婆'],
+    ['爷爷', '奶奶'], ['爷爷', '大婆'], ['外公', '外婆'],
     ['曾祖父', '曾祖母'], ['高祖父', '高祖母'], ['天祖父', '天祖母'],
     ['烈祖父', '烈祖母'], ['太祖父', '太祖母'], ['远祖父', '远祖母'], ['鼻祖', '鼻祖母'],
     ['外曾祖父', '外曾祖母'], ['外高祖父', '外高祖母'], ['外天祖父', '外天祖母'],
@@ -580,6 +583,7 @@
     '母亲': function (n) { return gendered(n, '儿子', '女儿', '儿女'); },
     '祖父': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '奶奶': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
+    '大婆': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '爷爷': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '外公': function (n) { return gendered(n, '外孙', '外孙女', '外孙辈'); },
     '外婆': function (n) { return gendered(n, '外孙', '外孙女', '外孙辈'); },
@@ -657,6 +661,27 @@
     return INV[type](person);
   }
 
+  // 本项目约定：关系链算出的曾祖辈（曾/高/天/烈/太/远/鼻祖）显示时统一降为爷爷辈，
+  // 「曾外祖母」也显示成「奶奶」（不再区分外系曾祖）。只改显示/称谓，不改 gen 计算。
+  // 本项目家族：父亲这边按和父亲比的排行叫，名字含「爹」的男性一律显示伯父
+  // （关系边可能把它推成父亲/姑姑等，这里只在推错时覆盖）。
+  function normalizeElderTitle(label, person) {
+    var s = String(label == null ? '' : label).trim();
+    var nm = person && person.name ? String(person.name) : '';
+    if (/爹/.test(nm) && (!person || person.gender !== 'f')) {
+      return s === '伯父' ? s : '伯父';
+    }
+    if (!s) return label;
+    // 只规范正名，不碰「A的B」这类路径称谓
+    if (/祖[父母]?$|祖母$|祖父$/.test(s) && /^(曾|高|天|烈|太|远|鼻|外曾|曾外|外高|外天)/.test(s)) {
+      return /母$/.test(s) ? '奶奶' : '爷爷';
+    }
+    if (/^(曾祖母|曾祖父|曾外祖母|曾外祖父|外曾祖母|外曾祖父|高祖母|高祖父)$/.test(s)) {
+      return /母$/.test(s) ? '奶奶' : '爷爷';
+    }
+    return label;
+  }
+
   function compute(rootId, persons, relations) {
     var labels = {};
     var viaRel = {};
@@ -714,6 +739,9 @@
           exact = false;
           label = path.join('的');
         }
+
+        // 称谓显示规范化：曾祖辈降为爷爷/奶奶；名字含「爹」的男性强制伯父
+        label = normalizeElderTitle(label, pmap[nid]);
 
         labels[nid] = {
           label: label,
@@ -829,7 +857,33 @@
   }
 
   // 排行（"23公" → 23；没有排行前缀返回 null）
-  function rankOf(name) { return splitRank(name).rank; }
+  // 「大X」= 同辈里最大的（大婆 = 奶奶辈最大），排行按 0，排最前
+  function rankOf(name) {
+    var s = String(name == null ? '' : name).trim();
+    if (/^大[公婆爷奶叔伯姑舅姨哥姐弟妹亲]/.test(s)) return 0;
+    return splitRank(name).rank;
+  }
+
+  // 称谓定世：认「祖辈称谓」，供关系图在关系边缺失/推错时兜底。
+  // 称谓都是相对「我」叫的，返回的代数就是相对根的偏移。
+  // 本项目约定：爷爷辈及更远的直系尊亲（曾/高/天/烈/太/远/鼻祖）都按上两代(-2)归一世。
+  function titleDelta(title) {
+    var t = String(title == null ? '' : title).trim();
+    if (!t) return null;
+    if (TYPE_DELTA[t] !== undefined) return TYPE_DELTA[t];
+    var keys = Object.keys(TERMS);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var al = TERMS[k].alias || [];
+      if (k === t || al.indexOf(t) >= 0) {
+        if (TYPE_DELTA[k] !== undefined) return TYPE_DELTA[k];
+        // 曾祖辈及更远：称谓或别名含「曾/高/天/烈/太/远/鼻 + 祖」的，按爷爷辈 -2
+        if (/^(曾|高|天|烈|太|远|鼻|外曾|曾外|外高|外天)/.test(t) && /祖/.test(t)) return -2;
+        if (/^(曾|高|天|烈|太|远|鼻|外曾|曾外)/.test(k) && /祖/.test(k)) return -2;
+      }
+    }
+    return null;
+  }
 
   // 去掉排行前缀后的称谓（"23公" → "公"）
   function baseTitle(name) { return splitRank(name).base; }
@@ -1008,6 +1062,7 @@
     aliasOf: function (label) { return aliasFor(label, null); },
     namesOf: namesOf,
     rankOf: rankOf,
+    titleDelta: titleDelta,
     baseTitle: baseTitle,
     matchStrength: matchStrength,
     buildRelations: buildRelations

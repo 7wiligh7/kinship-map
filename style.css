@@ -750,7 +750,8 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .rel-item:last-child { border-bottom: none; }
 
-.rel-sentence { flex: 1; }
+.rel-sentence { flex: 1; cursor: pointer; }
+.rel-sentence:hover { color: #1976d2; text-decoration: underline; }
 
 .rel-actions { display: flex; gap: 6px; margin-left: 8px; }
 
@@ -768,6 +769,10 @@ button:focus-visible, [role="button"]:focus-visible {
 .rel-btn.del { color: #f44336; }
 
 .rel-empty { font-size: 12px; color: #bbb; padding: 4px 0; }
+
+/* 独立关系窗口：关系行在 modal 的 form-group 里 */
+#relModal .rel-line select { min-width: 0; }
+#relModal .rel-line:last-child { margin-bottom: 0; }
 
 .rel-form {
     background: #fafafa;
@@ -911,6 +916,20 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .graph-svg { display: block; margin: 0 auto; }
 
+/* 地点分组大框：同一世、同一地点的人圈在一起，框角标地点名 */
+.g-group {
+    fill: rgba(126, 164, 224, 0.06);
+    stroke: rgba(126, 164, 224, 0.30);
+    stroke-width: 1;
+    stroke-dasharray: 6 4;
+}
+
+.g-group-label {
+    fill: #7f93b8;
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+
 .g-edge {
     fill: none;
     stroke: #4a5568;
@@ -922,6 +941,10 @@ button:focus-visible, [role="button"]:focus-visible {
 
 /* 夫妻婚线：横在两人名框之间 */
 .g-edge-spouse { stroke: #a78bfa; stroke-width: 2.2; }
+
+/* 旁系/兄弟姐妹线默认变淡，悬停关系链时经 .hl 恢复 */
+.g-edge-dim { opacity: 0.35; }
+.g-edge-dim.hl { opacity: 1; }
 
 .g-edge.hl { stroke: #f6e05e; stroke-width: 3; }
 
@@ -951,6 +974,10 @@ button:focus-visible, [role="button"]:focus-visible {
     stroke-width: 4px;
     stroke-linejoin: round;
 }
+
+/* 旁系/兄弟姐妹的关系字默认变淡，悬停高亮时恢复 */
+.g-label-dim { opacity: 0.4; }
+.g-label-dim.hl { opacity: 1; }
 
 .g-edge-label.hl { fill: #f6e05e; font-weight: bold; }
 

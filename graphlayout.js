@@ -23,9 +23,19 @@ var GraphLayout = (function () {
     }
     function rankOf(name) { return K && K.rankOf ? K.rankOf(name) : null; }
 
+    // 名字关键字定世：称谓是 name 原值（15公/三叔/4爹）时用的兜底。
+    // 返回相对「我」的代数偏移：公/婆=祖辈(-2)、爹/叔/姑/妈/娘/娘=父辈(-1)；认不出返回 null。
+    function nameGenOffset(name) {
+        var s = String(name == null ? '' : name);
+        if (/公|婆|公婆/.test(s)) return -2;
+        if (/爹|叔|姑|妈|娘|婶|姨|舅/.test(s)) return -1;
+        return null;
+    }
+
     var BOX_H = 36;          // 名框高度
     var TITLE_DY = 52;       // 称谓文字基线（相对名框顶部）
     var ROW_H = 136;         // 世与世之间的行距
+    var MIN_TARGET_W = 560;  // 折行时的最小目标宽度（避免单个家庭单位被切断）
     var PAD_TOP = 46;
     var PAD_BOTTOM = 44;
     var PAD_X = 44;
@@ -181,6 +191,24 @@ var GraphLayout = (function () {
         var labels = input.labels || {};
         var rootId = input.rootId || null;
 
+        // 地点顺序与名称：同辈按地点聚拢，同一地点圈进一个大框
+        var placeOrder = {}, placeName = {};
+        var pnext = 0;
+        (input.places || []).forEach(function (pl) {
+            if (pl && pl.id != null && placeOrder[pl.id] === undefined) {
+                placeOrder[pl.id] = pnext++;
+                placeName[pl.id] = pl.name || '';
+            }
+        });
+        persons.forEach(function (p) {
+            if (p && p.placeId != null && placeOrder[p.placeId] === undefined) {
+                placeOrder[p.placeId] = pnext++;
+            }
+        });
+        function placeOrd(pid) {
+            return pid != null && placeOrder[pid] !== undefined ? placeOrder[pid] : Infinity;
+        }
+
         /* ---------- 1. 收集：先把所有人物信息收进来 ---------- */
 
         var people = {};
@@ -195,6 +223,26 @@ var GraphLayout = (function () {
             var l = labels[p.id];
             if (!l) { unreach.push(p); return; }
             var title = l.label || '';
+            // 称谓定世兜底：称谓（关系边推出的 label / 手填 titles / 名字）里若明确是祖辈词
+            // （大婆/奶奶/爷爷…），用它覆盖关系边推出的世代，避免"大婆"被连错成二世。
+            var gen = l.gen;
+            var titleWords = [l.label].concat(p.titles || [], [p.name]);
+            for (var ti = 0; ti < titleWords.length; ti++) {
+                var tw = String(titleWords[ti] == null ? '' : titleWords[ti]).trim();
+                if (!tw) continue;
+                var td = K && K.titleDelta ? K.titleDelta(tw) : null;
+                if (td == null && K && K.baseTitle) {
+                    var bt = K.baseTitle(tw);
+                    if (bt !== tw) td = K.titleDelta(bt);
+                }
+                if (td != null) { gen = (labels[rootId] ? labels[rootId].gen : 0) + td; break; }
+            }
+            // 名字关键字定世：称谓是 name 原值（如 15公/三叔）算不出代数时，
+            // 用名字里的关键字定世——公/婆=祖辈(-2)、爹/叔/姑/妈/娘=父辈(-1)。
+            if (gen === (labels[rootId] ? labels[rootId].gen : 0) && p.id !== rootId) {
+                var ng = nameGenOffset(p.name);
+                if (ng != null) gen = (labels[rootId] ? labels[rootId].gen : 0) + ng;
+            }
             var w = Math.max(MIN_W, textWidth(p.name, 13) + 26, textWidth(title, 11) + 24);
             w = Math.min(MAX_W, w);
             info[p.id] = {
@@ -203,8 +251,9 @@ var GraphLayout = (function () {
                 title: title,
                 titleText: fitText(title, 11, w - 18),
                 alias: l.alias || [],
-                gen: l.gen,
+                gen: gen,
                 gender: p.gender || '',
+                placeId: p.placeId != null ? p.placeId : null,
                 rank: rankOf(p.name),
                 isRoot: p.id === rootId,
                 order: order++,
@@ -396,6 +445,17 @@ var GraphLayout = (function () {
                 if (b === rootId) return 1;
                 return pa.order - pb.order;
             });
+            // 单元的地点：取男成员的地点（从夫居）；夫妻来自不同地点时标记 mixed，
+            // 排到本地点组的末尾，避免把同地点的人从中间切开
+            var uPlace = null, uMixed = false;
+            unit.ids.forEach(function (uid) {
+                var pid = info[uid].placeId;
+                if (pid == null) return;
+                if (uPlace == null) uPlace = pid;
+                else if (uPlace !== pid) uMixed = true;
+            });
+            unit.placeOrd = placeOrd(uPlace);
+            unit.mixed = uMixed;
             var w = 0;
             unit.ids.forEach(function (uid, i) {
                 w += info[uid].w + (i ? COUPLE_GAP : 0);
@@ -416,7 +476,9 @@ var GraphLayout = (function () {
 
         rows.forEach(function (row) {
             row.units.sort(function (a, b) {
-                // 同辈有排行的按排行从小到大（23公 排在 24公 左边）
+                // 同辈先按地点聚拢（同一地点的人圈进一个大框），再按排行、录入顺序
+                if (a.placeOrd !== b.placeOrd) return a.placeOrd - b.placeOrd;
+                if (a.mixed !== b.mixed) return a.mixed ? 1 : -1;
                 var ra = unitRank(a), rb = unitRank(b);
                 if (ra != null && rb != null && ra !== rb) return ra - rb;
                 return info[a.ids[0]].order - info[b.ids[0]].order;
@@ -452,7 +514,9 @@ var GraphLayout = (function () {
                 u.bary = xs.length ? avg(xs) : u.center;
             });
             row.units.sort(function (a, b) {
-                // 排行优先于重心：同辈按 13、14… 从左到右排，没排行的再按重心/录入顺序
+                // 排行/重心前先按地点聚拢：同一地点的人连续排，才圈得进一个大框
+                if (a.placeOrd !== b.placeOrd) return a.placeOrd - b.placeOrd;
+                if (a.mixed !== b.mixed) return a.mixed ? 1 : -1;
                 var ra = unitRank(a), rb = unitRank(b);
                 if (ra != null && rb != null && ra !== rb) return ra - rb;
                 if (Math.abs(a.bary - b.bary) > 0.5) return a.bary - b.bary;
@@ -488,13 +552,72 @@ var GraphLayout = (function () {
             for (var b = rows.length - 2; b >= 0; b--) shiftRow(rows[b], rows[b + 1]);
         }
 
+        /* ---------- 2.5 折行（opt-in）：人多时一个世/地点排成多行，整图尽量正方形 ----------
+           默认不折行，保持原有「一出一世一行」的画法；仅当 input.wrap 为真时启用。
+           折行后每世拆成若干子行，子行内重新居中排布，节点 y 记在 _wrapY。 */
+        var wrap = !!input.wrap;
+        var SUB_ROW_H = ROW_H;
+        var wrapCols = 0, wrapBottom = 0;
+        if (wrap) {
+            var totalUnits = rows.reduce(function (s, r) { return s + r.units.length; }, 0) + unreach.length;
+            // 每行容量：优先按面板宽度算（一行的数量适应屏幕，超出换行，字保持原大）；
+            // 没有 panelWidth（如单测）时回退到面积开方。
+            var avgUnitW = 0, unitCount = 0;
+            rows.forEach(function (r) {
+                r.units.forEach(function (u) { avgUnitW += u.width; unitCount++; });
+            });
+            if (unitCount) avgUnitW = avgUnitW / unitCount;
+            else avgUnitW = 110;
+            var slotW = avgUnitW + ROW_GAP;
+            wrapCols = input.panelWidth > 0
+                ? Math.max(1, Math.floor((input.panelWidth - LEFT_W - PAD_X * 2) / slotW))
+                : Math.max(2, Math.round(Math.sqrt(totalUnits * ROW_H / 110)));
+            var yc = PAD_TOP;
+            rows.forEach(function (row) {
+                // 按屏幕宽度连续装填：单元逐个放进当前行，放不下就换行。
+                // 夫妻单元（unit）整体不拆；地点只用于分组框，不强制另起一行。
+                var lines = [];
+                var cur = [];
+                row.units.forEach(function (u) {
+                    if (cur.length && cur.length >= wrapCols) {
+                        lines.push(cur); cur = [];
+                    }
+                    cur.push(u);
+                });
+                if (cur.length) lines.push(cur);
+                if (!lines.length) lines.push([]);
+                row.wrapLines = lines;
+                row.y = yc;
+                lines.forEach(function (line, li) {
+                    var ly = yc + li * SUB_ROW_H;
+                    var total = 0;
+                    line.forEach(function (u, i) { total += u.width + (i ? ROW_GAP : 0); });
+                    var x = -total / 2;
+                    line.forEach(function (u) {
+                        u.ids.forEach(function (id) {
+                            var n = info[id];
+                            n.x = x + n.w / 2;
+                            n._wrapY = ly;
+                            x += n.w + COUPLE_GAP;
+                        });
+                        u.center = avg(u.ids.map(function (id) { return info[id].x; }));
+                        x += ROW_GAP;
+                    });
+                });
+                yc += lines.length * SUB_ROW_H + (ROW_H - SUB_ROW_H);
+            });
+            wrapBottom = yc;
+        }
+
         // 未连通的人另起一行
         var unreachRow = null;
         var nodes = [];
         var unreachNodes = [];
         if (unreach.length) {
-            // 未连通的也按排行排（没排行的保持录入顺序，Array.sort 稳定）
+            // 未连通的也按地点聚拢，再按排行排（没排行的保持录入顺序，Array.sort 稳定）
             unreach.sort(function (a, b) {
+                var pa = placeOrd(a.placeId), pb = placeOrd(b.placeId);
+                if (pa !== pb) return pa - pb;
                 var ra = rankOf(a.name), rb = rankOf(b.name);
                 if (ra != null && rb != null && ra !== rb) return ra - rb;
                 return 0;
@@ -508,20 +631,36 @@ var GraphLayout = (function () {
                 units: []
             };
             var total = 0;
-            unreach.forEach(function (p, i) {
+            unreach.forEach(function (p) {
                 var w = Math.min(MAX_W, Math.max(MIN_W, textWidth(p.name, 13) + 26));
                 unreachNodes.push({
                     id: p.id, name: p.name || '', title: '', titleText: '',
                     alias: [], gen: null, gender: p.gender || '', isRoot: false,
+                    placeId: p.placeId != null ? p.placeId : null,
                     w: w, x: 0, y: unreachRow.y
                 });
-                total += w + (i ? ROW_GAP : 0);
             });
-            var x = -total / 2;
-            unreachNodes.forEach(function (n) {
-                n.x = x + n.w / 2;
-                x += n.w + ROW_GAP;
+            var totalUnitsU = rows.reduce(function (s, r) { return s + r.units.length; }, 0) + unreach.length;
+            var cols = wrap ? wrapCols : totalUnitsU;
+            var lines = [];
+            for (var i = 0; i < unreachNodes.length; i += cols) lines.push(unreachNodes.slice(i, i + cols));
+            if (!lines.length) lines.push([]);
+            unreachRow.wrapLines = lines;
+            var uy = wrap ? wrapBottom : (PAD_TOP + rows.length * ROW_H);
+            unreachRow.y = uy;
+            lines.forEach(function (line, li) {
+                var ly = uy + li * SUB_ROW_H;
+                var t = 0;
+                line.forEach(function (n, i) { t += n.w + (i ? ROW_GAP : 0); });
+                var xx = -t / 2;
+                line.forEach(function (n) {
+                    n.x = xx + n.w / 2;
+                    n.y = ly;
+                    n._wrapY = ly;
+                    xx += n.w + ROW_GAP;
+                });
             });
+            if (wrap) wrapBottom = uy + lines.length * SUB_ROW_H + (ROW_H - SUB_ROW_H);
         }
 
         // 归一化到正坐标
@@ -532,26 +671,26 @@ var GraphLayout = (function () {
         }
         connected.forEach(function (id) {
             var n = info[id];
-            n.y = rows[rowOfGen[n.gen]].y;
+            n.y = wrap && n._wrapY != null ? n._wrapY : rows[rowOfGen[n.gen]].y;
             scan(n);
             nodes.push(n);
         });
         unreachNodes.forEach(scan);
         if (!nodes.length && !unreachNodes.length) {
-            return { width: 0, height: 0, rows: [], nodes: [], edges: [], labels: [] };
+            return { width: 0, height: 0, rows: [], nodes: [], edges: [], labels: [], groups: [] };
         }
         var shift = LEFT_W + PAD_X - minX;
         nodes.concat(unreachNodes).forEach(function (n) { n.x += shift; });
         var width = maxRight + shift + PAD_X;
         var rowsAll = rows.slice();
         if (unreachRow) {
-            unreachRow.y = PAD_TOP + rows.length * ROW_H;
-            unreachNodes.forEach(function (n) { n.y = unreachRow.y; });
+            if (!wrap) unreachNodes.forEach(function (n) { n.y = unreachRow.y; });
             rowsAll.push(unreachRow);
         }
-        var height = PAD_TOP + rowsAll.length * ROW_H + PAD_BOTTOM - 26;
+        var height = wrap ? (wrapBottom + PAD_BOTTOM - 26)
+                          : (PAD_TOP + rowsAll.length * ROW_H + PAD_BOTTOM - 26);
 
-        // 世系标题
+        // 世系标题：折行时一个世占多物理行，每行都要有淡虚线
         rowsAll.forEach(function (row) {
             if (row.kind === 'unreach') {
                 row.label = '未连通';
@@ -559,13 +698,54 @@ var GraphLayout = (function () {
                 var n = row.gen - gens[0] + 1;
                 row.label = cnNum(n) + '世';
             }
+            row.ys = wrap && row.wrapLines && row.wrapLines.length
+                ? row.wrapLines.map(function (_, i) { return row.y + i * SUB_ROW_H; })
+                : [row.y];
+        });
+
+        /* ---------- 3.5 地点分组框：同一世、同一地点的人圈进一个大框 ---------- */
+        var groups = [];
+        var GROUP_PAD_X = 10, GROUP_TOP = 16, GROUP_BOTTOM = 30; // 上留白放地点名，下留白放称谓
+        rowsAll.forEach(function (row) {
+            var inRow = [];
+            if (row.kind === 'unreach') {
+                inRow = unreachNodes.slice();
+            } else {
+                nodes.forEach(function (n) { if (n.gen === row.gen) inRow.push(n); });
+            }
+            inRow.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
+            var run = null;
+            function flush() {
+                if (!run) return;
+                groups.push({
+                    x: run.minX - GROUP_PAD_X,
+                    y: run.y - GROUP_TOP,
+                    w: run.maxX - run.minX + GROUP_PAD_X * 2,
+                    h: BOX_H + GROUP_TOP + GROUP_BOTTOM,
+                    label: placeName[run.pid] || ''
+                });
+                run = null;
+            }
+            inRow.forEach(function (n) {
+                // 没挂地点的断开分组；夫妻来自不同地点时各归各的框（按连续同地点切分）；
+                // 折行后不同子行 y 不同，也各自成框
+                if (n.placeId == null) { flush(); return; }
+                if (run && run.pid === n.placeId && run.y === n.y) {
+                    run.minX = Math.min(run.minX, n.x - n.w / 2);
+                    run.maxX = Math.max(run.maxX, n.x + n.w / 2);
+                } else {
+                    flush();
+                    run = { pid: n.placeId, y: n.y, minX: n.x - n.w / 2, maxX: n.x + n.w / 2 };
+                }
+            });
+            flush();
         });
 
         /* ---------- 4. 画图：只用归一化、归类后的关系生成线 ---------- */
 
         var edges = [];
 
-        // 父母→子女：同一父母组合 + 同一世只画一条下垂线/一根横杆
+        // 父母→子女：父母汇合后分叉到每个子女，不画贯穿整世的兄弟姐妹横杆
         Object.keys(parentGroups).forEach(function (key) {
             var g = parentGroups[key];
             var parents = g.parentIds.map(function (id) { return info[id]; }).filter(Boolean);
@@ -574,8 +754,9 @@ var GraphLayout = (function () {
             var pBottom = Math.max.apply(null, parents.map(function (p) { return p.y + BOX_H; }));
             var childNodes = g.children.map(function (id) { return info[id]; }).filter(Boolean);
             if (!childNodes.length) return;
-            var minChildY = Math.min.apply(null, childNodes.map(function (n) { return n.y; }));
-            var railY = Math.max(parents[0].y + 74, (pBottom + minChildY) / 2 + 4);
+            childNodes.sort(function (a, b) { return a.x - b.x; });
+            // 不画贯穿整世的兄弟姐妹横杆：每个子女一条独立分叉线，水平段高度依次错开
+            var railY = pBottom + 30;
 
             var anchorX = avg(parents.map(function (p) { return p.x; }));
             var d = [];
@@ -584,16 +765,17 @@ var GraphLayout = (function () {
                     d.push('M' + r1(p.x) + ' ' + r1(p.y + BOX_H) + 'H' + r1(anchorX));
                 });
             }
-            d.push('M' + r1(anchorX) + ' ' + r1(pBottom) + 'V' + r1(railY));
-
-            var xs = childNodes.map(function (n) { return n.x; });
-            var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
-            if (maxX - minX > 0.5) d.push('M' + r1(minX) + ' ' + r1(railY) + 'H' + r1(maxX));
-            childNodes.forEach(function (n) {
-                d.push('M' + r1(n.x) + ' ' + r1(railY) + 'V' + r1(n.y));
+            // 主干：从父母中点垂到最后一条分支的高度
+            d.push('M' + r1(anchorX) + ' ' + r1(pBottom) + 'V' + r1(railY + (childNodes.length - 1) * 10));
+            // 每个子女一条独立分叉线，水平段高度依次错开 10px，不再画贯穿横杆
+            childNodes.forEach(function (n, i) {
+                var by = railY + i * 10;
+                d.push('M' + r1(anchorX) + ' ' + r1(by) + 'H' + r1(n.x) + 'V' + r1(n.y));
             });
 
             var text = sortTypes(g.parentTypes.length ? g.parentTypes : g.childTypes).join('·');
+            // 标签候选落在父母与最高子女之间，避开父母框下的称谓文字
+            var minChildY = Math.min.apply(null, childNodes.map(function (n) { return n.y; }));
             edges.push({
                 kind: 'descent',
                 ris: g.ris.slice(),
@@ -601,7 +783,7 @@ var GraphLayout = (function () {
                 title: text,
                 label: {
                     text: text,
-                    candidates: descentCandidates(anchorX, pBottom, railY),
+                    candidates: descentCandidates(anchorX, pBottom + 16, Math.max(pBottom + 40, minChildY - 10)),
                     priority: 0,
                     ris: g.ris.slice()
                 },
@@ -689,7 +871,7 @@ var GraphLayout = (function () {
             return false;
         }
 
-        // 节点障碍：名框 + 框下称谓文字
+        // 节点障碍：名框 + 框下称谓文字 + 地点名（关系字避开地点名）
         var obstacles = [];
         nodes.forEach(function (n) {
             obstacles.push({ x: n.x - n.w / 2 - 4, y: n.y - 4, w: n.w + 8, h: BOX_H + 8 });
@@ -697,6 +879,11 @@ var GraphLayout = (function () {
                 var tw = textWidth(n.titleText, 11) + 8;
                 obstacles.push({ x: n.x - tw / 2, y: n.y + BOX_H + 6, w: tw, h: 16 });
             }
+        });
+        groups.forEach(function (gp) {
+            if (!gp.label) return;
+            var tw = textWidth(gp.label, 10) + 8;
+            obstacles.push({ x: gp.x + 6, y: gp.y + 2, w: tw, h: 14 });
         });
 
         var placed = [];
@@ -730,6 +917,7 @@ var GraphLayout = (function () {
                 x: best.c.x,
                 y: best.c.y,
                 anchor: best.c.anchor,
+                dim: lab.priority > 0,   // 旁系/兄弟姐妹关系字默认变淡，悬停高亮时恢复
                 box: best.box
             });
         });
@@ -747,6 +935,7 @@ var GraphLayout = (function () {
             nodes: nodes.concat(unreachNodes),
             edges: edges,
             labels: labelsOut,
+            groups: groups,
             boxH: BOX_H
         };
 
