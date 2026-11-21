@@ -8,7 +8,7 @@
     <title>亲属关系地图</title>
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🗺️</text></svg>">
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.55" />
+    <link rel="stylesheet" href="style.css?v=1.70" />
 
     <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
     <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
@@ -106,9 +106,9 @@
             </div>
 
             <div class="sidebar-menu">
-                <button type="button" class="menu-item" data-act="openAddPerson">
+                <button type="button" class="menu-item" data-act="addPlace">
                     <span class="menu-icon" aria-hidden="true">📍</span>
-                    <span class="menu-text">添加人物</span>
+                    <span class="menu-text">添加地点</span>
                 </button>
 
                 <button type="button" class="menu-item" data-act="openGraph">
@@ -128,63 +128,44 @@
 
                 <button type="button" class="menu-item" data-act="clearAll">
                     <span class="menu-icon" aria-hidden="true">🗑️</span>
-                    <span class="menu-text">清除全部</span>
+                    <span class="menu-text">清除所有数据</span>
                 </button>
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.7 · 构建 1.55（区域按比例外扩 3 倍·搜索源体检·慢源征询）</span>
+                <span class="version">v2.7 · 构建 1.70（清除所有数据：区域/地点/称谓/关系）</span>
 
             </div>
         </div>
 
-        <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <!-- 新增/编辑地点：增加/编辑称谓的唯一入口（设为「我」、推算称谓与互称） -->
+        <div class="modal" id="placeModal" role="dialog" aria-modal="true" aria-labelledby="placeModalTitle">
             <div class="modal-content">
                 <div class="modal-header">
-                    <span class="modal-title" id="modalTitle">添加人物</span>
+                    <span class="modal-title" id="placeModalTitle">添加地点</span>
                 </div>
 
                 <div class="form-group">
-                    <label class="label" for="inputName">姓名</label>
-                    <input class="input" id="inputName" placeholder="输入姓名" />
+                    <label class="label" for="inputPlaceName">地点名</label>
+                    <input class="input" id="inputPlaceName" placeholder="如：爷爷家 / 我家 / 外婆家" maxlength="20" />
                 </div>
 
                 <div class="form-group">
-                    <label class="label" for="inputGender">性别</label>
-                    <select class="input" id="inputGender">
-                        <option value="">未填</option>
-                        <option value="m">男</option>
-                        <option value="f">女</option>
-                    </select>
+                    <label class="label" for="inputPlaceNote">备注（可选）</label>
+                    <input class="input" id="inputPlaceNote" placeholder="如：村东头，紧邻水塘" maxlength="40" />
                 </div>
 
                 <div class="form-group">
-                    <label class="label" for="inputAge">年龄</label>
-                    <input class="input" id="inputAge" type="number" min="0" max="150" step="1" placeholder="年龄（选填）" />
-                </div>
-
-                <div class="form-group">
-                    <label class="label">手填称谓（推算不出时的兜底）</label>
-                    <div id="titleList">
-                        <div class="title-row">
-                            <input class="input title-input" placeholder="输入称谓" aria-label="手填称谓" />
-                            <button type="button" class="btn-remove" data-act="removeTitleRow" aria-label="删除该称谓">×</button>
-                        </div>
-                    </div>
-                    <button type="button" class="btn-add-title" data-act="addTitleRow">+ 添加称谓</button>
-                </div>
-
-                <div class="form-group root-row">
-                    <label>
-                        <input type="checkbox" id="inputRoot" />
-                        标记为“我”（称谓推算起点）
-                    </label>
+                    <label class="label">这个地点的称谓条目</label>
+                    <div id="placeTitleRows"></div>
+                    <button type="button" class="btn-add-title" data-act="addPlaceTitleRow">+ 添加称谓条目</button>
+                    <div class="label-tip">一个条目 = 一个称谓：称谓条目就是这个地点里的人（如 爷爷 / 奶奶 / 我）；第 1 行填称谓名，第 2 行选性别、年龄；每行左侧的 ＋ 把该称谓设为「我」（默认第一人）；行下方可展开推算出的称谓与互称</div>
                 </div>
 
                 <div class="modal-buttons">
-                    <button type="button" class="btn-cancel" data-act="closeModal">取消</button>
-                    <button type="button" class="btn-delete" id="btnDelete" data-act="deletePerson" style="display:none">删除</button>
-                    <button type="button" class="btn-confirm" data-act="confirmPerson">确定</button>
+                    <button type="button" class="btn-cancel" data-act="closePlaceModal">取消</button>
+                    <button type="button" class="btn-delete" id="btnDeletePlace" data-act="deletePlace" style="display:none">删除地点</button>
+                    <button type="button" class="btn-confirm" data-act="confirmPlace">确定</button>
                 </div>
             </div>
         </div>
@@ -200,12 +181,12 @@
                     <span class="info-card-name" id="infoName">-</span>
                     <span class="kin-badge" id="infoKin" style="display:none"></span>
                 </div>
-                <button type="button" class="close-btn" data-act="closeInfoCard" aria-label="关闭信息卡">×</button>
+                <button type="button" class="close-btn" data-act="closeInfoCard" aria-label="关闭地点卡">×</button>
             </div>
             <div class="info-card-titles" id="infoTitles"></div>
-            <div class="info-card-alias" id="infoAlias"></div>
-            <div class="info-card-path" id="infoPath"></div>
-            <div class="kin-mutual" id="infoMutual"></div>
+
+            <div class="rel-list-title">这个地点的称谓（只读，修改点「编辑地点」）</div>
+            <div class="place-people" id="placePeople"></div>
 
             <div class="rel-list-title">人物关系</div>
             <div id="relList"></div>
@@ -227,7 +208,7 @@
             <div class="info-card-buttons">
                 <button type="button" class="btn-cancel" data-act="closeInfoCard">关闭</button>
                 <button type="button" class="btn-cancel" data-act="showRelForm">+ 关系</button>
-                <button type="button" class="btn-confirm" data-act="editFromCard">编辑</button>
+                <button type="button" class="btn-confirm" data-act="editPlace">编辑地点</button>
                 <button type="button" class="btn-cancel" data-act="openGraph">关系图</button>
             </div>
         </div>
@@ -235,7 +216,10 @@
         <div class="graph-panel" id="graphPanel">
             <div class="graph-header">
                 <span class="graph-title">人物关系图</span>
-                <span class="graph-root" id="graphRoot"></span>
+                <label class="graph-root-pick">
+                    <span class="graph-root-tag">我：</span>
+                    <select id="graphRootSelect" aria-label="选择任意人物作为「我」（称谓推算起点）"></select>
+                </label>
                 <span class="graph-hint">悬停高亮路径 · 点击定位</span>
                 <button type="button" class="close-btn" data-act="closeGraph" aria-label="关闭关系图">×</button>
             </div>
@@ -256,10 +240,11 @@
     </div>
 
     <!-- defer 保持相对顺序；事件均经 app.js 的事件委托分发（见 ACTIONS），无内联 handler -->
-    <script defer src="config.js?v=1.55"></script>
+    <script defer src="config.js?v=1.70"></script>
     <script defer src="geocode.js?v=1.21"></script>
-    <script defer src="kinship.js?v=1.55"></script>
-    <script defer src="tilecache.js?v=1.55"></script>
-    <script defer src="app.js?v=1.55"></script>
+    <script defer src="kinship.js?v=1.70"></script>
+    <script defer src="tilecache.js?v=1.70"></script>
+    <script defer src="places.js?v=1.70"></script>
+    <script defer src="app.js?v=1.70"></script>
 </body>
 </html>

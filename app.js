@@ -4,8 +4,8 @@ var DEMO_FLAG = 'kinmap_demo_done';
 
 var map = null;
 var addMode = false;
-var pendingLatLng = null;
-var pendingDraft = null;
+var pendingLatLng = null;   // 待落地的坐标（地点用）
+var pendingPlaceDraft = null; // "先划区域再放地点"时的待落地地点
 var state = {
     workspace: null,
     data: null,
@@ -13,8 +13,11 @@ var state = {
     markers: {},
     markerLayer: null,
     regionLayer: null,
-    selectedId: null,
-    editingId: null,
+    selectedId: null,          // 选中的地点 id
+    openPlaceId: null,         // 地点卡当前打开的地点 id（卡片上的动作只认它）
+    selectedPersonId: null,    // 选中的地点下的人物 id（高亮用）
+    editingId: null,           // 正在编辑的人物 id
+    editingPlaceId: null,      // 正在编辑的地点 id
     // 首屏视野就位前不建瓦片层：否则会先按默认中心下一屏无用的瓦片
     tilesReady: false,
     // 搜索定位到当前区域外时临时解锁平移硬墙（回到区域内自动恢复）。
@@ -194,7 +197,7 @@ function wsKey(id) {
 }
 
 function freshV3() {
-    return { version: 3, regions: [], activeRegionId: null, persons: [], relations: [], rootId: null };
+    return { version: Places.SCHEMA_VERSION, regions: [], activeRegionId: null, places: [], persons: [], relations: [], rootId: null };
 }
 
 function loadWs(id) {
@@ -392,7 +395,6 @@ function resetWorkspaceUI() {
     // 上一个档案没走完的交互（添加人物、框选区域、待放置的人物草稿）
     addMode = false;
     pendingLatLng = null;
-    pendingDraft = null;
     if (draw.active) cleanupDraw();
 }
 
@@ -404,6 +406,9 @@ function enterWorkspace(id) {
     state.workspace = ws;
     state.isDemo = !!ws.demo;
     state.data = loadWs(id) || freshV3();
+    // 打开档案：把手填称谓逐个拆成独立称谓条目（一次性，data.titlesSplit 标记）
+    var splitN = Places.splitHandFilledTitles(state.data);
+    if (splitN) saveData();
     resetWorkspaceUI();
     document.getElementById('startup').classList.add('hidden');
     document.getElementById('wsBarEmoji').textContent = ws.emoji || '🏡';
@@ -419,6 +424,7 @@ function enterWorkspace(id) {
     fitActiveRegion();
     state.tilesReady = true;
     syncTileBounds(); /* 视野就位后再建瓦片层：首屏不浪费一屏瓦片 */
+    if (splitN) toast('已把手填称谓拆成 ' + splitN + ' 个独立称谓条目（性别/年龄请在「编辑地点」补填）', 4500);
 }
 
 /* ===== data layer (v1/v2/v3 normalize) ===== */
@@ -460,43 +466,9 @@ function normAge(v) {
 }
 
 function normalizeData(d) {
-    if (!d || typeof d !== 'object') return null;
-    // 裸数组（只有人物列表）也接受：按旧格式 buildings 对待
-    if (Array.isArray(d)) d = { buildings: d };
-    if (Array.isArray(d.buildings)) {
-        d = {
-            persons: d.buildings.map(function (b) {
-                // 旧格式可能没有 id（如坐标标注导出），自动补一个，否则会被白名单全数滤掉
-                return { id: b.id || newId(), name: b.name || '', gender: b.gender || '', age: normAge(b.age), titles: b.titles || [], lat: b.lat, lng: b.lng };
-            }),
-            relations: d.relations || [],
-            rootId: d.rootId || null
-        };
-    }
-    if (!Array.isArray(d.persons)) return null;
-    if (!Array.isArray(d.relations)) d.relations = [];
-    d.persons = d.persons.filter(function (p) {
-        return p && p.id && typeof p.name === 'string';
-    }).map(function (p) {
-        return {
-            id: String(p.id),
-            name: p.name,
-            gender: p.gender === 'm' || p.gender === 'f' ? p.gender : '',
-            age: normAge(p.age),
-            titles: Array.isArray(p.titles) ? p.titles.filter(function (t) { return typeof t === 'string' && t.trim(); }) : [],
-            lat: typeof p.lat === 'number' ? p.lat : null,
-            lng: typeof p.lng === 'number' ? p.lng : null,
-            regionId: typeof p.regionId === 'string' ? p.regionId : null
-        };
-    });
-    var ids = {};
-    d.persons.forEach(function (p) { ids[p.id] = true; });
-    d.relations = d.relations.filter(function (r) {
-        return r && ids[String(r.from)] && ids[String(r.to)] && typeof r.type === 'string' && r.type;
-    }).map(function (r) {
-        return { from: String(r.from), to: String(r.to), type: r.type };
-    });
-    d.rootId = d.rootId && ids[String(d.rootId)] ? String(d.rootId) : null;
+    // 人物/地点/关系交给 Places 模块（含旧格式迁移：人物自带坐标 → 同名地点 + 其下人物）
+    d = Places.normalize(d);
+    if (!d) return null;
 
     if (!Array.isArray(d.regions)) d.regions = [];
     d.regions = d.regions.filter(function (r) {
@@ -504,20 +476,19 @@ function normalizeData(d) {
     }).map(function (r) {
         return { id: String(r.id), name: typeof r.name === 'string' && r.name ? r.name : '未命名区域', polygon: r.polygon };
     });
-    if (!d.regions.length && d.persons.length && d.regionsCleared !== true) {
-        // 旧格式（v1/v2 导入）没有区域字段，按人物位置补一个默认区域；
+    if (!d.regions.length && d.places.length && d.regionsCleared !== true) {
+        // 旧格式（v1/v2 导入）没有区域字段，按地点位置补一个默认区域；
         // v3 里用户手动删光区域时会置 regionsCleared=true，这里不能再"长"回去。
-        d.regions = [synthRegion(d.persons)];
+        d.regions = [synthRegion(d.places)];
     }
     d.regionsCleared = d.regions.length === 0 && d.regionsCleared === true;
     var rids = {};
     d.regions.forEach(function (r) { rids[r.id] = true; });
     var fallbackRid = d.activeRegionId && rids[d.activeRegionId] ? d.activeRegionId : (d.regions[0] ? d.regions[0].id : null);
-    d.persons.forEach(function (p) {
-        if (!p.regionId || !rids[p.regionId]) p.regionId = fallbackRid;
+    d.places.forEach(function (pl) {
+        if (!pl.regionId || !rids[pl.regionId]) pl.regionId = fallbackRid;
     });
     d.activeRegionId = fallbackRid;
-    d.version = 3;
     return d;
 }
 
@@ -555,7 +526,7 @@ function initMap() {
         if (!addMode) return;
         addMode = false;
         syncTileBounds(); /* 放置完成：恢复瓦片范围 + 平移硬墙 */
-        openPersonModal(null, e.latlng);
+        openPlaceModal(null, e.latlng); /* 标注主体是地点：先填地点名，再往里加人物 */
     });
     map.on('dblclick', function () {
         if (draw.active) finishRegion();
@@ -590,7 +561,7 @@ function initMap() {
         if (draw.active || !addMode) return;
         addMode = false;
         syncTileBounds(); /* 放置完成：恢复瓦片范围 + 平移硬墙 */
-        openPersonModal(null, e.latlng);
+        openPlaceModal(null, e.latlng); /* 右键同左键：增加/编辑称谓统一进「编辑地点」 */
     });
     function onViewportChange() {
         if (!map) return;
@@ -1118,8 +1089,9 @@ function fitRegion(r) {
 function fitData(force) {
     if (!map) return;
     var pts = [];
-    state.data.persons.forEach(function (p) {
-        if (p.lat != null && p.lng != null) pts.push([p.lat, p.lng]);
+    // 视野按「地点」算：人物不再自带坐标
+    (state.data.places || []).forEach(function (pl) {
+        if (pl.lat != null && pl.lng != null) pts.push([pl.lat, pl.lng]);
     });
     if (pts.length) {
         // 不用动画：初始视野要立刻到位，否则后续 setView 会被动画回调覆盖
@@ -1133,25 +1105,30 @@ function renderAll(fit) {
     if (!state.markerLayer) return;
     state.markerLayer.clearLayers();
     state.markers = {};
-    state.data.persons.forEach(function (p) {
-        if (p.lat == null || p.lng == null) return;
-        var isRoot = p.id === state.data.rootId;
+    // 地图上标注的是「地点」：一个地点一个标记，名字是地点名，人数角标是地点下的人数
+    var rootId = effectiveRootId();
+    (state.data.places || []).forEach(function (pl) {
+        if (pl.lat == null || pl.lng == null) return;
+        var people = Places.peopleAt(state.data, pl.id);
+        var isRoot = people.some(function (p) { return p.id === rootId; });
+        var html = '<span class="bl-label' + (isRoot ? ' root' : '') + '">' + esc(pl.name) +
+            (people.length ? '<i class="bl-count">' + people.length + '</i>' : '') + '</span>';
         var icon = L.divIcon({
             className: 'bl-anchor',
-            html: '<span class="bl-label' + (isRoot ? ' root' : '') + '">' + esc(p.name) + '</span>',
+            html: html,
             iconSize: [0, 0],
             iconAnchor: [0, 0]
         });
-        var m = L.marker([p.lat, p.lng], { icon: icon, keyboard: false }).addTo(state.markerLayer);
+        var m = L.marker([pl.lat, pl.lng], { icon: icon, keyboard: false }).addTo(state.markerLayer);
         m.on('click', function () {
             addMode = false;
-            openInfoCard(p.id);
+            openPlaceCard(pl.id);
         });
         m.on('contextmenu', function (e) {
             addMode = false;
-            showContextMenu(e.originalEvent, p.id);
+            showContextMenu(e.originalEvent, pl.id);
         });
-        state.markers[p.id] = m;
+        state.markers[pl.id] = m;
     });
     renderRegions();
     if (fit) fitData(false);
@@ -1282,17 +1259,22 @@ function cleanupDraw() {
 }
 
 function cancelDraw() {
-    if (pendingDraft) {
-        var draft = pendingDraft;
-        pendingDraft = null;
+    if (pendingPlaceDraft) {
+        // 「先划区域再放地点」被取消：把地点草稿拿回来继续填
+        var pd = pendingPlaceDraft;
+        pendingPlaceDraft = null;
         cleanupDraw();
-        openPersonModal(null, L.latLng(draft.lat, draft.lng));
-        document.getElementById('inputName').value = draft.name;
-        document.getElementById('inputGender').value = draft.gender;
-        document.getElementById('inputAge').value = draft.age != null ? draft.age : '';
-        document.getElementById('titleList').innerHTML = '';
-        (draft.titles.length ? draft.titles : ['']).forEach(function (t) { addTitleRow(t); });
-        document.getElementById('inputRoot').checked = !!draft.isRoot;
+        openPlaceModal(null, L.latLng(pd.lat, pd.lng));
+        document.getElementById('inputPlaceName').value = pd.name;
+        document.getElementById('inputPlaceNote').value = pd.note || '';
+        // 回填待落地的称谓条目
+        var rows0 = document.getElementById('placeTitleRows');
+        if (rows0) {
+            rows0.innerHTML = '';
+            (pd.entries || []).forEach(function (e) {
+                addPlaceTitleRow(e.name, e.gender, e.age, e.name === pd.rootName, null);
+            });
+        }
         return;
     }
     cleanupDraw();
@@ -1339,10 +1321,10 @@ function createRegion(name, verts) {
     renderRegions();
     fitRegion(region);
     toast('已创建区域「' + name + '」');
-    if (pendingDraft) {
-        var draft = pendingDraft;
-        pendingDraft = null;
-        savePersonDraft(draft, region.id);
+    if (pendingPlaceDraft) {
+        var pd = pendingPlaceDraft;
+        pendingPlaceDraft = null;
+        savePlaceDraft(pd, region.id);
     }
 }
 
@@ -2144,23 +2126,34 @@ function flyToPlace(i) {
 /* ===== demo ===== */
 
 function demoData() {
-    function d(id, name, gender, age, lat, lng) {
-        return { id: id, name: name, gender: gender, age: age, titles: [], lat: lat, lng: lng, regionId: 'r_demo' };
+    // 演示数据也按新模型：地点（标注主体）→ 其下人物
+    function pl(id, name, lat, lng) {
+        return { id: id, name: name, note: '', lat: lat, lng: lng, regionId: 'r_demo' };
     }
+    function p(id, name, gender, age, placeId) {
+        return { id: id, name: name, gender: gender, age: age, titles: [], placeId: placeId };
+    }
+    var places = [
+        pl('pl_grand', '爷爷奶奶家', 31.0016, 111.0004),
+        pl('pl_home', '我家', 31.0003, 111.0002),
+        pl('pl_uncle', '伯父家', 31.0010, 110.9996),
+        pl('pl_yi', '小姨家', 30.9995, 111.0015)
+    ];
     var persons = [
-        d('d_gf', '爷爷', 'm', 78, 31.0016, 111.0004),
-        d('d_gm', '奶奶', 'f', 76, 31.0015, 111.0011),
-        d('d_bo', '伯父', 'm', 52, 31.0010, 110.9996),
-        d('d_co', '堂哥', 'm', 27, 31.0005, 110.9991),
-        d('d_fa', '爸', 'm', 50, 31.0003, 111.0002),
-        d('d_mo', '妈', 'f', 48, 30.9999, 111.0010),
-        d('d_yi', '小姨', 'f', 43, 30.9995, 111.0015),
-        d('d_me', '我', 'm', 24, 30.9992, 111.0000)
+        p('d_gf', '爷爷', 'm', 78, 'pl_grand'),
+        p('d_gm', '奶奶', 'f', 76, 'pl_grand'),
+        p('d_fa', '爸', 'm', 50, 'pl_home'),
+        p('d_mo', '妈', 'f', 48, 'pl_home'),
+        p('d_me', '我', 'm', 24, 'pl_home'),
+        p('d_bo', '伯父', 'm', 52, 'pl_uncle'),
+        p('d_co', '堂哥', 'm', 27, 'pl_uncle'),
+        p('d_yi', '小姨', 'f', 43, 'pl_yi')
     ];
     return {
-        version: 3,
-        regions: [{ id: 'r_demo', name: '演示区域', polygon: padPolygon(convexHull(persons.map(function (p) { return [p.lat, p.lng]; })), 1.1, 0.0005) }],
+        version: Places.SCHEMA_VERSION,
+        regions: [{ id: 'r_demo', name: '演示区域', polygon: padPolygon(convexHull(places.map(function (x) { return [x.lat, x.lng]; })), 1.1, 0.0005) }],
         activeRegionId: 'r_demo',
+        places: places,
         persons: persons,
         relations: [
             { from: 'd_gf', to: 'd_fa', type: '父亲' },
@@ -2196,17 +2189,18 @@ function clearDemo() {
     saveData();
     renderAll(false);
     showDemoBanner();
-    toast('已清空，先「新建区域」再添加人物');
+    toast('已清空，先「新建区域」再添加地点');
 }
 
-/* ===== person modal ===== */
+/* ===== 地点（标注主体） ===== */
 
-function openAddPerson() {
-    if (!state.data) return;
+// 侧栏「添加地点」：进入放置模式 → 点地图 → 填地点名
+function addPlace() {
+    if (!state.workspace || !state.data) return;
     if (!state.data.regions.length) {
         showDialog({
-            title: '还没有区域',
-            body: '先加一块区域：搜索地名，或在地图上框选。标注都归入区域管理。',
+            title: '先建一个区域',
+            body: '先加一块区域：搜索地名，或在地图上框选。标注的地点都归入区域管理。',
             buttons: [
                 { label: '取消' },
                 { label: '搜索地名', onClick: function () { focusPlaceSearch(); } },
@@ -2218,109 +2212,162 @@ function openAddPerson() {
     toggleSidebarIfOpen();
     if (addMode) {
         addMode = false;
-        syncTileBounds(); /* 恢复瓦片范围 + 平移硬墙 */
+        syncTileBounds();
         toast('已退出放置模式');
         return;
     }
     addMode = true;
     state._tileKey = null;
-    syncTileBounds(); /* 放置模式：瓦片与平移同时解锁 */
-    toast('点击地图空白处放置人物（可先在侧栏搜索点「定位」跳过去）', 3500);
+    syncTileBounds();
+    toast('点击地图空白处标注地点（可先在侧栏搜索点「定位」跳过去）', 3500);
 }
 
-function openPersonModal(id, latlng) {
-    state.editingId = id || null;
+// 打开地点弹窗（新增 / 编辑）：地点信息 + 该地点的称谓条目（姓名/性别/年龄）都在这里
+function openPlaceModal(placeId, latlng) {
+    state.editingPlaceId = placeId || null;
     pendingLatLng = latlng || null;
-    var p = id ? findPerson(id) : null;
-    document.getElementById('modalTitle').textContent = p ? '编辑人物' : '添加人物';
-    document.getElementById('inputName').value = p ? p.name : '';
-    document.getElementById('inputGender').value = p ? p.gender : '';
-    document.getElementById('inputAge').value = p && p.age != null ? p.age : '';
-    document.getElementById('inputRoot').checked = p ? p.id === state.data.rootId : false;
-    var tl = document.getElementById('titleList');
-    tl.innerHTML = '';
-    var titles = p ? p.titles.slice() : [];
-    if (!titles.length) titles = [''];
-    titles.forEach(function (t) { addTitleRow(t); });
-    document.getElementById('btnDelete').style.display = p ? '' : 'none';
-    document.getElementById('modal').classList.add('show');
-    setTimeout(function () { document.getElementById('inputName').focus(); }, 50);
+    var pl = placeId ? Places.findPlace(state.data, placeId) : null;
+    document.getElementById('placeModalTitle').textContent = pl ? '编辑地点' : '添加地点';
+    document.getElementById('inputPlaceName').value = pl ? pl.name : '';
+    document.getElementById('inputPlaceNote').value = pl ? (pl.note || '') : '';
+    // 称谓条目表
+    var rows = document.getElementById('placeTitleRows');
+    rows.innerHTML = '';
+    var people = pl ? Places.peopleAt(state.data, pl.id) : [];
+    var rootId = effectiveRootId();
+    people.forEach(function (p) { addPlaceTitleRow(p.name, p.gender, p.age, p.id === rootId, p.id); });
+    if (!people.length) addPlaceTitleRow('', '', null, false, null);
+    document.getElementById('btnDeletePlace').style.display = pl ? '' : 'none';
+    document.getElementById('placeModal').classList.add('show');
+    // 新增时聚焦地点名；编辑时不自动抢焦点
+    if (!pl) setTimeout(function () { document.getElementById('inputPlaceName').focus(); }, 50);
 }
 
-function addTitleRow(val) {
-    var tl = document.getElementById('titleList');
+// 地点编辑器里加一行称谓条目（一个条目 = 一个称谓）。
+// isRoot=true 表示这行当前是「我」的起点；kinId 传人物 id 时，
+// 行下方带「推算称谓/互称」展开区。
+// 两行布局：第 1 行 ＋|称谓名|×（名字独占整行，手机上不被挤没），第 2 行 性别|年龄。
+function addPlaceTitleRow(name, gender, age, isRoot, kinId) {
+    var rows = document.getElementById('placeTitleRows');
+    if (!rows) return;
     var row = document.createElement('div');
-    row.className = 'title-row';
-    row.innerHTML = '<input class="input title-input" placeholder="输入称谓" aria-label="手填称谓" /><button type="button" class="btn-remove" data-act="removeTitleRow" aria-label="删除该称谓">×</button>';
-    row.querySelector('input').value = val || '';
-    tl.appendChild(row);
+    row.className = 'place-title-row' + (isRoot ? ' root-mark' : '');
+    row.innerHTML =
+        '<button type="button" class="pt-me' + (isRoot ? ' on' : '') + '" data-act="markPlaceRootRow" ' +
+        'title="' + (isRoot ? '当前「我」' : '设为「我」') + '" aria-label="设为「我」" ' +
+        'aria-pressed="' + (isRoot ? 'true' : 'false') + '">＋</button>' +
+        '<input class="input pt-name" placeholder="称谓，如 爷爷" aria-label="称谓" />' +
+        '<button type="button" class="btn-remove" data-act="removePlaceTitleRow" aria-label="删除该称谓条目">×</button>' +
+        '<div class="pt-meta">' +
+        '<select class="input pt-gender" aria-label="性别">' +
+        '<option value="">性别</option><option value="m">男</option><option value="f">女</option></select>' +
+        '<input class="input pt-age" type="number" min="0" max="150" step="1" placeholder="年龄" aria-label="年龄" />' +
+        '</div>' +
+        (kinId ? '<details class="pt-kin-wrap"><summary>推算出的称谓与互称</summary><div class="pt-kin kin-box"></div></details>' : '');
+    row.querySelector('.pt-name').value = name || '';
+    row.querySelector('.pt-gender').value = gender || '';
+    row.querySelector('.pt-age').value = age != null ? age : '';
+    rows.appendChild(row);
+    if (kinId) renderPersonKin(kinId, row.querySelector('.pt-kin'));
 }
 
-function removeTitleRow(el) {
-    el.parentElement.remove();
+// 地点编辑器里点某行的 ＋：把它设为「我」；再点一次取消（回到默认第一人）
+function markPlaceRootRow(el) {
+    var row = el.closest ? el.closest('.place-title-row') : el.parentElement;
+    if (!row) return;
+    var wasMarked = row.classList.contains('root-mark');
+    var rows = document.querySelectorAll('#placeTitleRows .place-title-row');
+    Array.prototype.forEach.call(rows, function (r) {
+        r.classList.remove('root-mark');
+        var b = r.querySelector('.pt-me');
+        if (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); }
+        if (b) b.title = '设为「我」';
+    });
+    if (!wasMarked) {
+        row.classList.add('root-mark');
+        el.classList.add('on');
+        el.setAttribute('aria-pressed', 'true');
+        el.title = '当前「我」';
+    }
 }
 
-function collectTitles() {
-    return Array.prototype.map.call(document.querySelectorAll('#titleList .title-input'), function (i) {
-        return i.value.trim();
+// 删掉一行称谓条目
+function removePlaceTitleRow(el) {
+    var row = el.closest ? el.closest('.place-title-row') : el.parentElement;
+    if (row) row.remove();
+}
+
+// 读表：[{ name, gender, age }]（一个条目 = 一个称谓，没有 titles 字段）
+function collectPlaceTitles() {
+    var rows = document.getElementById('placeTitleRows');
+    if (!rows) return [];
+    return Array.prototype.map.call(rows.querySelectorAll('.place-title-row'), function (row) {
+        var name = (row.querySelector('.pt-name').value || '').trim();
+        if (!name) return null;
+        return {
+            name: name,
+            gender: row.querySelector('.pt-gender').value || '',
+            age: normAge(row.querySelector('.pt-age').value)
+        };
     }).filter(Boolean);
 }
 
-function closeModal() {
-    document.getElementById('modal').classList.remove('show');
-    state.editingId = null;
+function closePlaceModal() {
+    document.getElementById('placeModal').classList.remove('show');
+    state.editingPlaceId = null;
     pendingLatLng = null;
 }
 
-function confirmPerson() {
-    var name = document.getElementById('inputName').value.trim();
-    if (!name) { toast('请输入姓名'); return; }
-    var draft = {
-        name: name,
-        gender: document.getElementById('inputGender').value,
-        age: normAge(document.getElementById('inputAge').value),
-        titles: collectTitles(),
-        isRoot: document.getElementById('inputRoot').checked,
-        lat: null,
-        lng: null
-    };
+function confirmPlace() {
+    var name = document.getElementById('inputPlaceName').value.trim();
+    if (!name) { toast('请输入地点名'); return; }
+    var note = document.getElementById('inputPlaceNote').value.trim();
+    var entries = collectPlaceTitles();
 
-    if (state.editingId) {
-        var p = findPerson(state.editingId);
-        if (!p) { closeModal(); return; }
-        p.name = draft.name;
-        p.gender = draft.gender;
-        p.age = draft.age;
-        p.titles = draft.titles;
-        if (draft.isRoot) state.data.rootId = p.id;
-        else if (state.data.rootId === p.id) state.data.rootId = null;
+    // 每行左侧的 ＋ 是「我」的选择（只能一个）；没标记则不改动现有起点
+    var markedRow = document.querySelector('#placeTitleRows .place-title-row.root-mark');
+    var rootName = markedRow ? (markedRow.querySelector('.pt-name').value || '').trim() : '';
+
+    if (state.editingPlaceId) {
+        var pl = Places.findPlace(state.data, state.editingPlaceId);
+        if (!pl) { closePlaceModal(); return; }
+        pl.name = name;
+        pl.note = note;
+        // 保存前记录：本地点此前是否持有显式起点（用于「取消 ＋」后回到默认第一人）
+        var preIds = {};
+        Places.peopleAt(state.data, pl.id).forEach(function (p) { preIds[p.id] = true; });
+        var hadExplicitRoot = !!(state.data.rootId && preIds[state.data.rootId]);
+        syncPlaceEntries(pl.id, entries);
+        applyPlaceRoot(pl.id, rootName, hadExplicitRoot);
         saveData();
         renderAll(false);
         markUserModified();
-        closeModal();
-        toast('已保存 ' + draft.name);
+        closePlaceModal();
+        openPlaceCard(pl.id);
+        toast('已保存 ' + name);
         return;
     }
 
     if (!pendingLatLng) { toast('请先在地图上选点'); return; }
-    draft.lat = pendingLatLng.lat;
-    draft.lng = pendingLatLng.lng;
+    var lat = pendingLatLng.lat, lng = pendingLatLng.lng;
+    var draft = { name: name, note: note, lat: lat, lng: lng, entries: entries, rootName: rootName };
 
+    // 还没有区域：先划区域，划完再把地点放进去
     if (!state.data.regions.length) {
-        pendingDraft = draft;
-        closeModal();
+        pendingPlaceDraft = draft;
+        closePlaceModal();
         startDrawRegion();
-        toast('先划定区域，人物随后归入', 3000);
+        toast('先划定区域，地点随后归入', 3000);
         return;
     }
 
     var active = activeRegion();
-    if (active && pointInPolygon([draft.lat, draft.lng], active.polygon)) {
-        savePersonDraft(draft, active.id);
-        closeModal();
+    if (active && pointInPolygon([lat, lng], active.polygon)) {
+        savePlaceDraft(draft, active.id);
         return;
     }
 
+    // 落点在当前区域之外：给三种处理方式
     var others = state.data.regions.filter(function (r) { return active && r.id !== active.id; });
     var body = '落点在区域<b>「' + esc(active ? active.name : '') + '」</b>范围之外。';
     body += '<div style="margin-top:10px">怎么处理？</div>';
@@ -2334,12 +2381,11 @@ function confirmPerson() {
         buttons.push({
             label: '拓展「' + active.name + '」范围', cls: 'primary',
             onClick: function () {
-                var poly = convexHull(active.polygon.concat([[draft.lat, draft.lng]]));
+                var poly = convexHull(active.polygon.concat([[lat, lng]]));
                 active.polygon = padPolygon(poly, 1.03, 0.0003);
                 saveData();
                 renderRegions();
-                savePersonDraft(draft, active.id);
-                closeModal();
+                savePlaceDraft(draft, active.id);
                 toast('已拓展区域范围');
             }
         });
@@ -2350,8 +2396,7 @@ function confirmPerson() {
             onClick: function () {
                 var sel = document.getElementById('oobTarget');
                 var rid = sel ? sel.value : others[0].id;
-                savePersonDraft(draft, rid);
-                closeModal();
+                savePlaceDraft(draft, rid);
             }
         });
     }
@@ -2359,41 +2404,108 @@ function confirmPerson() {
     showDialog({ title: '落点超出区域', body: body, buttons: buttons });
 }
 
-function savePersonDraft(draft, regionId) {
-    var p = {
-        id: newId(),
-        name: draft.name,
-        gender: draft.gender,
-        age: draft.age != null ? draft.age : null,
-        titles: draft.titles,
-        lat: draft.lat,
-        lng: draft.lng,
-        regionId: regionId
-    };
-    state.data.persons.push(p);
-    if (draft.isRoot) state.data.rootId = p.id;
+// 把某地点里指定称谓的人设为「我」；rootName 为空且该地点此前持有显式起点时，
+// 取消显式指定并回落到默认第一人（与点掉 ＋ 的语义一致）。
+function applyPlaceRoot(placeId, rootName, hadExplicitRoot) {
+    if (rootName) {
+        var target = Places.peopleAt(state.data, placeId).filter(function (p) { return p.name === rootName; })[0];
+        if (target && !(state.data.rootId === null && target.id === Places.effectiveRootId(state.data))) {
+            state.data.rootId = target.id;
+        }
+    } else if (hadExplicitRoot) {
+        state.data.rootId = null;
+    }
+}
+
+// 真正落库一个地点（含它的称谓条目）
+function savePlaceDraft(draft, regionId) {
+    var pl = Places.addPlace(state.data, {
+        name: draft.name, note: draft.note, lat: draft.lat, lng: draft.lng, regionId: regionId
+    });
+    (draft.entries || []).forEach(function (e) {
+        Places.addPerson(state.data, { name: e.name, gender: e.gender, age: e.age, placeId: pl.id, titles: [] });
+    });
+    // 新地点里被 ＋ 标记的称谓直接成为「我」；未标记则沿用默认第一人
+    applyPlaceRoot(pl.id, draft.rootName, false);
     saveData();
     renderAll(false);
     markUserModified();
-    toast('已保存 ' + p.name);
+    closePlaceModal();
+    openPlaceCard(pl.id);
+    toast('已添加地点 ' + pl.name);
+}
+
+// 按编辑器里的表同步某个地点的称谓条目：
+// 同名条目保留原 id 与关系，改名视为新条目，多出来的删掉；
+// 一个条目 = 一个称谓，已有条目不动其 titles（手填的 titles 由打开档案时拆分清掉）
+function syncPlaceEntries(placeId, entries) {
+    var existing = Places.peopleAt(state.data, placeId);
+    var keep = {};
+    existing.forEach(function (p) { keep[p.name] = p; });
+    var wanted = {};
+    entries.forEach(function (e) { wanted[e.name] = true; });
+    existing.slice().forEach(function (p) {
+        if (!wanted[p.name]) Places.removePerson(state.data, p.id);
+    });
+    entries.forEach(function (e) {
+        var p = keep[e.name];
+        if (!p) {
+            Places.addPerson(state.data, { name: e.name, gender: e.gender, age: e.age, placeId: placeId, titles: [] });
+            return;
+        }
+        p.gender = e.gender;
+        p.age = e.age;
+    });
+}
+
+// 删除地点（连带其下人物与相关关系）
+function deletePlace() {
+    var id = state.editingPlaceId;
+    if (!id) return;
+    var pl = Places.findPlace(state.data, id);
+    if (!pl) { closePlaceModal(); return; }
+    var n = Places.peopleCount(state.data, id);
+    if (!confirm('删除地点「' + pl.name + '」？' + (n ? '其下的 ' + n + ' 个人物和相关关系也会一并删除。' : ''))) return;
+    Places.removePlace(state.data, id);
+    saveData();
+    renderAll(false);
+    markUserModified();
+    closePlaceModal();
+    closeInfoCard();
+    toast('已删除 ' + pl.name);
+}
+
+// 地点卡上「+ 称谓」：打开地点编辑器并加一行空条目
+function addTitleToPlace() {
+    var placeId = state.openPlaceId;
+    if (!placeId) return;
+    openPlaceModal(placeId);
+    addPlaceTitleRow('', '', null);
+    var rows = document.getElementById('placeTitleRows');
+    if (rows) {
+        var last = rows.lastElementChild;
+        if (last) {
+            var inp = last.querySelector('.pt-name');
+            if (inp) inp.focus();
+        }
+    }
 }
 
 function removePerson(id) {
-    state.data.persons = state.data.persons.filter(function (p) { return p.id !== id; });
-    state.data.relations = state.data.relations.filter(function (r) { return r.from !== id && r.to !== id; });
-    if (state.data.rootId === id) state.data.rootId = null;
+    Places.removePerson(state.data, id);
 }
 
-function deletePerson() {
-    if (!state.editingId) return;
-    var p = findPerson(state.editingId);
+// 地点人物列表里的删除按钮
+function deletePersonById(id) {
+    var p = findPerson(id);
     if (!p) return;
+    var placeId = p.placeId;
     if (!confirm('删除「' + p.name + '」及其全部关系？')) return;
     removePerson(p.id);
     saveData();
     renderAll(false);
-    closeModal();
-    closeInfoCard();
+    markUserModified();
+    if (placeId) openPlaceCard(placeId);
     toast('已删除 ' + p.name);
 }
 
@@ -2416,26 +2528,34 @@ function hideContextMenu() {
 
 function editFromMenu() {
     hideContextMenu();
-    openPersonModal(state.selectedId);
+    openPlaceModal(state.selectedId);   // 右键标记 → 编辑地点
 }
 
 function deleteFromMenu() {
     hideContextMenu();
-    var p = findPerson(state.selectedId);
-    if (!p) return;
-    if (!confirm('删除「' + p.name + '」及其全部关系？')) return;
-    removePerson(p.id);
+    var pl = Places.findPlace(state.data, state.selectedId);
+    if (!pl) return;
+    var n = Places.peopleCount(state.data, pl.id);
+    if (!confirm('删除地点「' + pl.name + '」？' + (n ? '其下的 ' + n + ' 个人物和相关关系也会一并删除。' : ''))) return;
+    Places.removePlace(state.data, pl.id);
     saveData();
     renderAll(false);
     closeInfoCard();
-    toast('已删除 ' + p.name);
+    toast('已删除 ' + pl.name);
 }
 
 /* ===== kinship ===== */
 
+// 称谓推算起点：默认第一人；用户显式标记（rootId）时以标记为准。
+// 所有展示与称谓判定都走这里，保证「我」始终有起点。
+function effectiveRootId() {
+    return state.data ? Places.effectiveRootId(state.data) : null;
+}
+
 function computeKinship() {
-    if (!state.data || !state.data.rootId || !state.data.persons.length) return null;
-    try { return Kinship.compute(state.data.rootId, state.data.persons, state.data.relations); } catch (e) { return null; }
+    var rootId = effectiveRootId();
+    if (!state.data || !rootId || !state.data.persons.length) return null;
+    try { return Kinship.compute(rootId, state.data.persons, state.data.relations); } catch (e) { return null; }
 }
 
 function personName(id) {
@@ -2443,59 +2563,86 @@ function personName(id) {
     return p ? p.name : '?';
 }
 
-function openInfoCard(id) {
-    var p = findPerson(id);
-    if (!p) return;
+/* ===== 地点卡：地点是标注主体，人物挂在地点下 ===== */
+
+function openPlaceCard(placeId) {
+    var pl = Places.findPlace(state.data, placeId);
+    if (!pl) return;
     toggleSidebarIfOpen();
-    state.selectedId = id;
-    document.getElementById('infoName').textContent = p.name;
+    state.selectedId = placeId;
+    state.openPlaceId = placeId;
+    document.getElementById('infoName').textContent = pl.name;
     var kin = document.getElementById('infoKin');
-    var pathEl = document.getElementById('infoPath');
-    var aliasEl = document.getElementById('infoAlias');
-    var k = computeKinship();
-    var lab = k ? k.labels[id] : null;
-    if (id === state.data.rootId) {
-        kin.textContent = '我';
-        kin.className = 'kin-badge';
-        kin.style.display = '';
-        pathEl.classList.remove('show');
-        aliasEl.classList.remove('show');
-    } else if (lab) {
-        kin.textContent = lab.label;
-        kin.className = 'kin-badge' + (lab.exact ? '' : ' inexact');
-        kin.style.display = '';
-        // 正名旁边给出本土俗称：高祖父（又叫 老太爷、祖爷爷、太爷爷）
-        if (lab.exact && lab.alias && lab.alias.length) {
-            aliasEl.textContent = '又叫：' + lab.alias.slice(0, 3).join(' · ');
-            aliasEl.classList.add('show');
-        } else {
-            aliasEl.classList.remove('show');
-        }
-        if (!lab.exact && lab.path && lab.path.length) {
-            pathEl.textContent = lab.path.join(' → ');
-            pathEl.classList.add('show');
-        } else {
-            pathEl.classList.remove('show');
-        }
-    } else {
-        kin.style.display = 'none';
-        aliasEl.classList.remove('show');
-        // 算不出称谓时别静默留空：把原因写出来，用户才知道是「没标记我」还是「关系链没接上」
-        if (!k) {
-            pathEl.textContent = '还没有标记「我」：编辑某个人物 → 勾选「标记为“我”」，才能换算称谓';
-        } else {
-            pathEl.textContent = '和「我」之间还没有连上的关系链：补一条关系（谁是谁的什么人）就能换算称谓';
-        }
-        pathEl.classList.add('show');
-    }
-    var bits = [];
-    if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
-    if (p.titles.length) bits.push('手填称谓：' + p.titles.join('、'));
-    document.getElementById('infoTitles').textContent = bits.join('　');
-    renderMutualTitles(id, lab);
-    renderRelList(id);
+    if (kin) kin.style.display = 'none';
+    document.getElementById('infoTitles').textContent = pl.note || '';
+    renderPlacePeople(placeId);
+    renderRelList(placeId);
     document.getElementById('relForm').classList.remove('show');
     document.getElementById('infoCard').classList.add('show');
+}
+
+// 地点下的人物：姓名 + 推算称谓 + 性别年龄，点行编辑该人物
+function renderPlacePeople(placeId) {
+    var box = document.getElementById('placePeople');
+    if (!box) return;
+    var people = Places.peopleAt(state.data, placeId);
+    if (!people.length) {
+        box.innerHTML = '<div class="rel-empty">这个地点还没有称谓，点下面「+ 称谓」添加</div>';
+        return;
+    }
+    var k = computeKinship();
+    var rootId = effectiveRootId();
+    box.innerHTML = people.map(function (p) {
+        var lab = k ? k.labels[p.id] : null;
+        var badge = '';
+        if (p.id === rootId) {
+            badge = '<span class="kin-badge">我</span>';
+        } else if (lab) {
+            badge = '<span class="kin-badge' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>';
+        }
+        var bits = [];
+        if (p.gender === 'm') bits.push('男'); else if (p.gender === 'f') bits.push('女');
+        if (p.age != null) bits.push(p.age + ' 岁');
+        if (p.titles && p.titles.length) {
+            var extra = p.titles.filter(function (x) { return x !== p.name; });
+            if (extra.length) bits.push('手填：' + extra.join('、'));
+        }
+        var isRoot = p.id === rootId;
+        var meBtn = '<button type="button" class="pp-me' + (isRoot ? ' on' : '') + '" ' +
+            'title="' + (isRoot ? '当前「我」' : '设为「我」') + '" ' +
+            'aria-label="' + (isRoot ? '当前「我」是 ' + esc(p.name) : '把 ' + esc(p.name) + ' 设为「我」') + '" ' +
+            'aria-pressed="' + (isRoot ? 'true' : 'false') + '" ' +
+            'data-act="setRootPerson" data-id="' + esc(p.id) + '">＋</button>';
+        return '<div class="place-person">' + /* 只读展示：修改统一走「编辑地点」 */
+            '<span class="pp-name">' + esc(p.name) + badge + '</span>' +
+            '<span class="pp-meta">' + esc(bits.join(' · ')) + '</span>' +
+            meBtn +
+            '<button type="button" class="pp-del" title="删除人物" aria-label="删除人物 ' + esc(p.name) + '" data-act="deletePersonById" data-id="' + esc(p.id) + '">×</button>' +
+            '</div>';
+    }).join('');
+}
+
+// 每行下方的称谓区：推算称谓 + 路径 + 互称（跟着人物走，不再挂在地点上）
+function renderPersonKin(id, box) {
+    if (!box) return;
+    var p = findPerson(id);
+    if (!p) { box.innerHTML = ''; return; }
+    var k = computeKinship();
+    var lab = k ? k.labels[id] : null;
+    var html = '';
+    if (id === effectiveRootId()) {
+        html = '<div class="kin-main">这是「我」——称谓推算的起点（默认第一人；点行左侧的 ＋ 可换成别人）</div>';
+    } else if (lab) {
+        html = '<div class="kin-main"><span class="kin-badge' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>' +
+            (lab.alias && lab.alias.length ? '<span class="kin-alias">又叫：' + esc(lab.alias.slice(0, 3).join(' · ')) + '</span>' : '') +
+            (lab.path && lab.path.length ? '<span class="kin-path">' + esc(lab.path.join(' → ')) + '</span>' : '') + '</div>';
+    } else {
+        html = '<div class="kin-main kin-none">' +
+            (k ? '算不出彼此的称谓：先在「+ 关系」里把人物连起来' : '还没有人物数据：先在地点里添加称谓条目') +
+            '</div>';
+    }
+    box.innerHTML = html;
+    renderMutualTitles(id, lab, box);
 }
 
 function closeInfoCard() {
@@ -2507,19 +2654,21 @@ function closeInfoCard() {
 // 同年龄段判定阈值：两人年龄差这么多岁以内算「同年龄段」，辈分却不同时给出特别提示
 var KIN_CLOSE_AGE = 10;
 
-function renderMutualTitles(id, fwdLab) {
-    var box = document.getElementById('infoMutual');
+function renderMutualTitles(id, fwdLab, target) {
+    // target 传了就追加到那个容器（编辑地点每行的称谓区）；不传则用旧的信息卡容器
+    var box = target || document.getElementById('infoMutual');
     if (!box) return;
-    box.classList.remove('show');
-    if (!state.data || !state.data.rootId || id === state.data.rootId) return;
+    if (!target) box.classList.remove('show');
+    var rootId = effectiveRootId();
+    if (!state.data || !rootId || id === rootId) return;
     var m = null;
     try {
-        m = Kinship.mutual(state.data.rootId, id, state.data.persons, state.data.relations);
+        m = Kinship.mutual(rootId, id, state.data.persons, state.data.relations);
     } catch (e) { m = null; }
     if (!m || (!m.iCall && !m.theyCall)) return; // 未连进「我」的关系网：无换算可给
 
     var p = findPerson(id);
-    var me = findPerson(state.data.rootId);
+    var me = findPerson(rootId);
     var he = p && p.gender === 'f' ? '她' : '他';
 
     function val(lab) {
@@ -2549,17 +2698,23 @@ function renderMutualTitles(id, fwdLab) {
             }
         }
     }
-    box.innerHTML = html;
-    box.classList.add('show');
+    if (target) {
+        box.insertAdjacentHTML('beforeend', html);
+    } else {
+        box.innerHTML = html;
+        box.classList.add('show');
+    }
 }
 
 function editFromCard() {
-    openPersonModal(state.selectedId);
+    openPlaceModal(state.selectedId);   // 地点卡上的「编辑地点」
 }
 
-function renderRelList(id) {
+// 地点卡上的关系列表：这个地点里的人物之间、以及他们与别处人物之间的关系
+function renderRelList(placeId) {
     var box = document.getElementById('relList');
-    var rels = state.data.relations.filter(function (r) { return r.from === id || r.to === id; });
+    if (!box) return;
+    var rels = Places.relationsOfPlace(state.data, placeId);
     if (!rels.length) {
         box.innerHTML = '<div class="rel-empty">暂无关系，点下方「+ 关系」添加</div>';
         return;
@@ -2575,12 +2730,18 @@ function renderRelList(id) {
     }).join('');
 }
 
+// 定位到某个人物：跳到他所在的地点并打开地点卡
 function jumpToPerson(id) {
     var p = findPerson(id);
-    if (!p || p.lat == null) { toast('该人物没有点位'); return; }
+    if (!p) { toast('该人物不存在'); return; }
+    var pl = Places.findPlace(state.data, p.placeId);
+    if (!pl) { toast('该人物没有所属地点'); return; }
     hideSearch();
-    openInfoCard(id);
-    map.setView([p.lat, p.lng], Math.max(map.getZoom(), 17));
+    openPlaceCard(pl.id);
+    if (pl.lat != null && pl.lng != null) {
+        map.setView([pl.lat, pl.lng], Math.max(map.getZoom(), 17));
+    }
+    toast('定位到「' + pl.name + '」的 ' + p.name, 2000);
 }
 
 function deleteRelation(idx) {
@@ -2590,23 +2751,30 @@ function deleteRelation(idx) {
     state.data.relations.splice(idx, 1);
     saveData();
     renderAll(false);
-    if (state.selectedId && findPerson(state.selectedId)) openInfoCard(state.selectedId);
+    if (state.selectedId) openPlaceCard(state.selectedId);
 }
 
 function showRelForm() {
-    var id = state.selectedId;
-    if (!id) return;
+    var placeId = state.selectedId;
+    if (!placeId) return;
     var fromSel = document.getElementById('relFrom');
     var toSel = document.getElementById('relTo');
     var typeSel = document.getElementById('relType');
+    // 关系可以跨地点：下拉列出全部人物，并标出各自所在地点
     var opts = state.data.persons.map(function (p) {
-        return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>';
+        return '<option value="' + esc(p.id) + '">' + esc(Places.personLabel(state.data, p.id)) + '</option>';
     }).join('');
     fromSel.innerHTML = opts;
     toSel.innerHTML = opts;
-    fromSel.value = id;
+    // 默认：优先用当前地点里的两个人物
+    var here = Places.peopleAt(state.data, placeId);
+    if (here.length) fromSel.value = here[0].id;
     var other = null;
-    state.data.persons.forEach(function (p) { if (!other && p.id !== id) other = p; });
+    if (here.length > 1) {
+        other = here[1];
+    } else {
+        state.data.persons.forEach(function (p) { if (!other && p.id !== fromSel.value) other = p; });
+    }
     if (other) toSel.value = other.id;
     typeSel.innerHTML = Kinship.TYPE_GROUPS.map(function (g) {
         return '<optgroup label="' + esc(g.group) + '">' +
@@ -2635,7 +2803,7 @@ function saveRelation() {
     renderAll(false);
     markUserModified();
     hideRelForm();
-    if (state.selectedId) openInfoCard(state.selectedId);
+    if (state.selectedId) openPlaceCard(state.selectedId);
     toast('已添加关系');
 }
 
@@ -2643,7 +2811,9 @@ function saveRelation() {
 
 function exportData() {
     if (!state.data) return;
-    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, regionsCleared: state.data.regionsCleared === true, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId };
+    // places 必须一起导出：v3 里人物的坐标/地点名都挂在地点上，
+    // 少了 places 会被 normalize 当成旧格式，导入后地点名与坐标全部丢失。
+    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, regionsCleared: state.data.regionsCleared === true, places: state.data.places, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId, titlesSplit: state.data.titlesSplit || 0 };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -2670,35 +2840,63 @@ function handleImport(input) {
         try { d = normalizeData(JSON.parse(reader.result)); } catch (e) { toast('文件不是有效的 JSON'); return; }
         if (!d) { toast('文件格式不正确'); return; }
         if (!d.persons.length) { toast('文件中没有人物数据'); return; }
-        var n = state.data.persons.length;
-        if (n && !confirm('导入将【覆盖】当前档案的全部数据（' + n + ' 人 / ' + state.data.relations.length + ' 条关系）。\n确定覆盖吗？')) return;
+        var n = state.data.places.length;
+        if (n && !confirm('导入将【覆盖】当前档案的全部数据（' + n + ' 个地点 / ' + state.data.persons.length + ' 个称谓条目）。\n确定覆盖吗？')) return;
         state.data = d;
+        var splitN = Places.splitHandFilledTitles(d); // 手填称谓逐个拆成独立条目（一次性）
         saveData();
         renderRegions();
         renderAll(false);
         fitActiveRegion();
         markUserModified();
-        toast('导入成功：' + d.persons.length + ' 人 / ' + d.regions.length + ' 区域');
+        var splitNote = splitN ? '；手填称谓另拆出 ' + splitN + ' 条' : '';
+        if (d.migratedFrom) {
+            // 旧格式数据：人物自带坐标 → 已按称谓重建为「地点 + 称谓条目」
+            toast('已导入：' + d.migratedFrom.places + ' 个地点 / ' + d.migratedFrom.people +
+                ' 个称谓条目（按旧称谓重建）' + splitNote, 5000);
+        } else {
+            toast('导入成功：' + d.places.length + ' 个地点 / ' + d.persons.length + ' 个称谓条目' + splitNote);
+        }
     };
     reader.onerror = function () { toast('读取文件失败'); };
     reader.readAsText(f, 'utf-8');
 }
 
+// 清除当前档案里用户添加的全部数据：区域、地点、称谓条目、人物关系、起点。
+// 只保留本机配置（如高德/天地图 key）与离线瓦片缓存，便于重新开始记录。
 function clearAll() {
     if (!state.data) return;
-    var n = state.data.persons.length;
-    if (!n) { toast('没有数据'); return; }
-    if (!confirm('清除当前档案全部 ' + n + ' 人及全部关系？区域设置保留。')) return;
-    state.data.persons = [];
-    state.data.relations = [];
-    state.data.rootId = null;
+    var d = state.data;
+    var counts = {
+        regions: d.regions.length,
+        places: d.places.length,
+        persons: d.persons.length,
+        relations: d.relations.length
+    };
+    var total = counts.regions + counts.places + counts.persons + counts.relations;
+    if (!total) { toast('还没有添加任何数据'); return; }
+    var parts = [];
+    if (counts.regions) parts.push(counts.regions + ' 个区域');
+    if (counts.places) parts.push(counts.places + ' 个地点');
+    if (counts.persons) parts.push(counts.persons + ' 个称谓条目');
+    if (counts.relations) parts.push(counts.relations + ' 条关系');
+    if (!confirm('清除当前档案的所有数据？\n\n将删除：' + parts.join('、') + '，以及「我」的起点。\n区域、地点、称谓条目、人物关系会全部清空，不可恢复；建议先「导出数据」备份。')) return;
+
+    state.data = freshV3();
     if (state.isDemo) localStorage.setItem(DEMO_FLAG, '1');
     state.isDemo = false;
     updateWsMeta({ demo: false });
+    state.selectedId = null;
+    state.openPlaceId = null;
+    pendingPlaceDraft = null;
+    addMode = false;
+    closeInfoCard();
+    closePlaceModal();
+    cleanupDraw();
     saveData();
     renderAll(false);
     showDemoBanner();
-    toast('已清除全部数据');
+    toast('已清除全部添加的数据，可以重新开始记录');
 }
 
 function flyToMe() {
@@ -2729,21 +2927,63 @@ function closeGraph() {
     document.getElementById('graphPanel').classList.remove('show');
 }
 
+// 关系图头部的「我」选择器：列出档案里所有人物，当前起点默认选中。
+// 第一人额外标注「默认第一人」，让用户知道没手动指定时的起点规则。
+function fillGraphRootSelect() {
+    var sel = document.getElementById('graphRootSelect');
+    if (!sel) return;
+    var persons = (state.data && state.data.persons) || [];
+    if (!persons.length) {
+        sel.innerHTML = '<option value="">还没有人物</option>';
+        sel.disabled = true;
+        return;
+    }
+    var rootId = effectiveRootId();
+    var firstId = persons[0].id;
+    sel.disabled = false;
+    sel.innerHTML = persons.map(function (p) {
+        // 姓名放最前：窄屏时下拉框会截断尾部，至少要能看清是谁
+        var label = p.name;
+        if (p.id === firstId) label += '（默认第一人）';
+        var pl = Places.placeOf(state.data, p.id);
+        if (pl) label += ' · ' + pl.name;
+        return '<option value="' + esc(p.id) + '"' + (p.id === rootId ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+}
+
+// 把任意人物设为「我」：写回 rootId，并同步地图标记、地点卡与关系图（如果开着）。
+// 关系图下拉框和地点/称谓行的 ＋ 都走这里，保证三处状态一致。
+function setRootPerson(id) {
+    if (!state.data) return;
+    var p = Places.findPerson(state.data, id);
+    if (!p) return;
+    var wasRoot = effectiveRootId() === p.id;
+    state.data.rootId = p.id;
+    saveData();
+    markUserModified();
+    renderAll(false);            // 地图标记的「我」高亮 / 地点卡人物徽章
+    if (state.openPlaceId && document.getElementById('infoCard').classList.contains('show')) {
+        openPlaceCard(state.openPlaceId); // 已打开的地点卡重新算称谓
+    }
+    if (document.getElementById('graphPanel').classList.contains('show')) {
+        renderGraph();           // 关系图按新起点重排
+    }
+    toast(wasRoot ? '「' + p.name + '」已经是「我」' : '已把「' + p.name + '」设为「我」');
+}
+
 function renderGraph() {
     var body = document.getElementById('graphBody');
-    var rootLabel = document.getElementById('graphRoot');
+    fillGraphRootSelect();
     if (!state.data.persons.length) {
         body.innerHTML = '<div class="graph-empty">还没有人物数据，先在地图上添加人物</div>';
-        rootLabel.textContent = '';
         return;
     }
     var k = computeKinship();
-    if (!k) {
-        body.innerHTML = '<div class="graph-empty">请先标记「我」：编辑某人物 → 勾选「标记为“我”」</div>';
-        rootLabel.textContent = '';
+    var rootId = effectiveRootId();
+    if (!k || !rootId) {
+        body.innerHTML = '<div class="graph-empty">称谓推算暂不可用：检查人物关系数据</div>';
         return;
     }
-    rootLabel.textContent = '我：' + personName(state.data.rootId);
     var layers = {};
     var unreach = [];
     state.data.persons.forEach(function (p) {
@@ -2787,7 +3027,7 @@ function renderGraph() {
     state.data.persons.forEach(function (p) {
         var pt = pos[p.id];
         if (!pt) return;
-        var isRoot = p.id === state.data.rootId;
+        var isRoot = p.id === rootId;
         nodesHtml += '<g class="g-node' + (isRoot ? ' root' : '') + '" data-id="' + esc(p.id) + '" transform="translate(' + pt.x + ',' + pt.y + ')">' +
             '<circle r="18"></circle>' +
             '<text class="g-node-name" y="5">' + esc(p.name) + '</text>' +
@@ -2900,10 +3140,24 @@ var ACTIONS = {
     createWorkspace: createWorkspace,
     showCreateForm: showCreateForm,
     searchPlaces: searchPlaces,
-    openKeySettings: openKeySettings,
     startDrawRegion: startDrawRegion,
     offlineRegionDialog: offlineRegionDialog,
-    openAddPerson: openAddPerson,
+    addPlace: addPlace,
+    addTitleToPlace: addTitleToPlace,
+    // 带默认参的零参动作：必须包一层——dispatch 传的是 (el, e)，
+    // 直映射会把按钮元素当第一个参数（曾导致 [object HTMLButtonElement]）
+    addPlaceTitleRow: function () { addPlaceTitleRow('', '', null); },
+    removePlaceTitleRow: function (el) { removePlaceTitleRow(el); },
+    markPlaceRootRow: function (el) { markPlaceRootRow(el); },
+    setRootPerson: function (el) { setRootPerson(el.dataset.id); },
+    openPlaceModal: function (el) { openPlaceModal(el && el.dataset ? (el.dataset.id || null) : null, null); },
+    openKeySettings: function () { openKeySettings(); },
+    closePlaceModal: closePlaceModal,
+    confirmPlace: confirmPlace,
+    deletePlace: deletePlace,
+    editPlace: editFromCard,
+    // 带参动作（元素自身携带 data-* 参数）
+    deletePersonById: function (el) { deletePersonById(el.dataset.id); },
     openGraph: openGraph,
     importData: importData,
     exportData: exportData,
@@ -2915,19 +3169,14 @@ var ACTIONS = {
     saveRelation: saveRelation,
     editFromCard: editFromCard,
     closeGraph: closeGraph,
-    closeModal: closeModal,
-    deletePerson: deletePerson,
-    confirmPerson: confirmPerson,
     editFromMenu: editFromMenu,
     deleteFromMenu: deleteFromMenu,
-    addTitleRow: addTitleRow,
     retryPlaceSearch: retryPlaceSearch,
     hintCoords: hintCoords,
     checkSources: runSourceCheck,
     backToRegion: backToRegion,
     // 带参动作（元素自身携带 data-* 参数）
     pickEmoji: function (el) { pickEmoji(el); },
-    removeTitleRow: function (el) { removeTitleRow(el); },
     enterWorkspace: function (el) { enterWorkspace(el.dataset.id); },
     deleteWorkspace: function (el) { deleteWorkspace(el.dataset.id); },
     switchRegion: function (el) { switchRegion(el.dataset.id); },
@@ -2956,9 +3205,9 @@ document.addEventListener('click', function (e) {
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
         if (draw.active) cancelDraw();
-        var modalOpen = document.getElementById('modal').classList.contains('show');
+        var modalOpen = document.getElementById('placeModal').classList.contains('show');
         hideDialog();
-        closeModal();
+        closePlaceModal();
         closeInfoCard();
         closeGraph();
         hideSearch();
@@ -2991,13 +3240,7 @@ document.getElementById('wsPlaceInput').addEventListener('keydown', function (e)
 document.getElementById('placeInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') searchPlaces();
 });
-document.getElementById('inputName').addEventListener('keydown', function (e) {
-    // 仅在人物弹窗打开时回车=确定，避免平时误触
-    if (e.key === 'Enter' && document.getElementById('modal').classList.contains('show')) {
-        e.preventDefault();
-        confirmPerson();
-    }
-});
 document.getElementById('importFile').addEventListener('change', function () { handleImport(this); });
+document.getElementById('graphRootSelect').addEventListener('change', function () { setRootPerson(this.value); });
 
 document.addEventListener('DOMContentLoaded', boot);

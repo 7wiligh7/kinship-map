@@ -444,6 +444,186 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .bl-label.root:hover { background: #b71c1c; }
 
+/* ===== 地点卡：地点下的人物列表 ===== */
+.place-people {
+    margin-bottom: 10px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.place-person {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: #fcfcfc;
+    cursor: default; /* 只读展示：修改统一走「编辑地点」 */
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.place-person:hover { background: #f5f5f5; border-color: #ddd; }
+
+.pp-name {
+    font-size: 14px;
+    color: #333;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.pp-meta {
+    font-size: 12px;
+    color: #999;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pp-del {
+    border: none;
+    background: transparent;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0 4px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.pp-del:hover { color: #f44336; }
+
+/* 地点卡人物行：＋ = 把这个称谓设为「我」 */
+.pp-me {
+    border: 1px solid #cfe3cf;
+    background: #f3faf3;
+    color: #2e7d32;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+
+.pp-me:hover { background: #e3f2e3; }
+
+.pp-me.on {
+    background: #2e7d32;
+    border-color: #2e7d32;
+    color: #fff;
+}
+
+.pp-me.on:hover { background: #276b2b; }
+
+/* 标记上的地点名 + 人数角标 */
+.bl-count {
+    font-style: normal;
+    font-size: 11px;
+    background: rgba(0, 0, 0, 0.12);
+    color: #666;
+    border-radius: 8px;
+    padding: 0 5px;
+    margin-left: 4px;
+    font-weight: 400;
+}
+
+.bl-label.root .bl-count { background: rgba(255, 255, 255, 0.25); color: #fff; }
+
+/* 称谓区（编辑地点每行下方的展开区） */
+.kin-box {
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #555;
+}
+
+.kin-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kin-alias { font-size: 12px; color: #7a6a45; }
+.kin-path { font-size: 12px; color: #999; }
+
+/* 地点编辑器里的称谓条目表（一个条目 = 一个称谓）：
+   第 1 行 ＋|称谓名|×（名字独占整行宽度，手机上不被挤没），
+   第 2 行 性别|年龄，第 3 行可展开推算称谓与互称 */
+.place-title-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+/* 名字与两侧按钮同排：.input 自带 width:100%，这里必须把 flex-basis 归零，
+   否则基准宽度撑满整行，＋ 和 × 会被挤到各自单独一行 */
+.place-title-row .pt-name { flex: 1 1 0; width: auto; min-width: 0; }
+
+/* 第 2 行：性别 + 年龄，强制换到下一行、各占一半 */
+.pt-meta {
+    flex: 1 0 100%;
+    display: flex;
+    gap: 6px;
+}
+.pt-meta .pt-gender { flex: 1 1 50%; min-width: 0; }
+.pt-meta .pt-age { flex: 1 1 50%; min-width: 0; }
+
+/* 行下方：推算出的称谓与互称（折叠，点开看） */
+.pt-kin-wrap { flex: 1 0 100%; }
+.pt-kin-wrap summary { font-size: 12px; color: #2b6cb0; cursor: pointer; user-select: none; }
+.pt-kin { margin-top: 4px; margin-bottom: 0; font-size: 12px; }
+
+/* 称谓条目左侧的 ＋：把这行设为「我」（选中后填充绿色） */
+.pt-me {
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    border: 1px solid #cfe3cf;
+    background: #f3faf3;
+    color: #2e7d32;
+    border-radius: 50%;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.pt-me:hover { background: #e3f2e3; }
+
+.pt-me.on {
+    background: #2e7d32;
+    border-color: #2e7d32;
+    color: #fff;
+}
+
+.pt-me.on:hover { background: #276b2b; }
+
+.entry-summary {
+    font-size: 14px;
+    color: #333;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.label-tip {
+    font-size: 12px;
+    color: #999;
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
 .info-card {
     position: fixed;
     bottom: 80px;
@@ -667,7 +847,33 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .graph-title { font-size: 16px; font-weight: bold; }
 
-.graph-root { font-size: 13px; color: #a0c4ff; flex: 1; }
+.graph-root-pick {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #a0c4ff;
+    flex: 1;
+    min-width: 0;
+}
+
+.graph-root-tag { flex: none; }
+
+.graph-root-pick select {
+    background: #0f3460;
+    color: #e0e6f5;
+    border: 1px solid #2a4a7f;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 13px;
+    max-width: 260px;
+    min-width: 120px;
+    cursor: pointer;
+}
+
+.graph-root-pick select:disabled { opacity: .6; cursor: default; }
+
+.graph-root-pick select:focus { outline: 2px solid #4a7fd4; outline-offset: 1px; }
 
 .graph-hint { font-size: 12px; color: #8892b0; }
 
