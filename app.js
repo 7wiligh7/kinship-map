@@ -202,7 +202,7 @@ function makeEgo(gender) {
     return {
         id: EGO_ID,
         name: '我',
-        gender: gender === 'f' ? 'f' : 'm',
+        gender: gender || '',
         age: null,
         titles: [],
         placeId: null,
@@ -237,7 +237,6 @@ function ensureEgo(d) {
         d.persons = d.persons.filter(function (p) { return p !== ego && !remap[p.id]; });
         ego.id = EGO_ID;
         ego.name = '我';
-        ego.gender = ego.gender === 'f' ? 'f' : 'm';
         ego.placeId = null;
         ego.isEgo = true;
         d.persons.unshift(ego);
@@ -631,7 +630,9 @@ function initMap() {
         map.invalidateSize();
         syncMapPan(); // 视口尺寸变了，缩放下限要重算
         if (document.getElementById('graphPanel') && document.getElementById('graphPanel').classList.contains('show')) {
-            renderGraph(); // 屏幕宽度变了，一行能放几人重算
+            // 蛛网图不按行重排：视口变了只重新适应一次，保留同一份布局
+            if (graphView) fitGraphView(false);
+            else renderGraph();
         }
     }
     window.addEventListener('resize', onViewportChange);
@@ -2206,7 +2207,7 @@ function demoData() {
         pl('pl_yi', '小姨家', 30.9995, 111.0015)
     ];
     var persons = [
-        makeEgo('m'),
+        makeEgo(),
         p('d_gf', '爷爷', 'm', 78, 'pl_grand'),
         p('d_gm', '奶奶', 'f', 76, 'pl_grand'),
         p('d_fa', '爸', 'm', 50, 'pl_home'),
@@ -2564,11 +2565,6 @@ function deleteFromMenu() {
 
 // 称谓推算起点：内置「我」永远排在第一位，无需录入、也不可删除。
 // 所有展示与称谓判定都走这里，保证「我」始终有起点。
-function effectiveRootId() {
-    return state.data ? Places.effectiveRootId(state.data) : null;
-}
-
-// 内置「我」永远是起点，性别用于姻亲称谓推算（非用户可改项）。
 function effectiveRootId() {
     return state.data ? Places.effectiveRootId(state.data) : null;
 }
@@ -2967,6 +2963,8 @@ function openGraph() {
 }
 
 function closeGraph() {
+    stopGraphAnim();
+    graphView = null;
     document.getElementById('graphPanel').classList.remove('show');
 }
 
@@ -2988,8 +2986,357 @@ function autoFillRelations() {
     toast('已补齐 ' + adds.length + ' 条关系');
 }
 
+// 同址辈分挂靠：同一地点里不同辈分的人，逐级挂到刚好高一辈的人下面；
+// 中间缺辈就挂到该地点最高辈。生成的是真实关系，会影响称谓推算与导出。
+function attachPlaceGenerations() {
+    if (!state.data || !state.data.persons.length) { toast('还没有人物数据'); return; }
+    var rootId = effectiveRootId();
+    if (!rootId) { toast('还没有人物数据'); return; }
+    var adds = Kinship.attachSamePlaceGenerations(
+        state.data.persons, state.data.relations, state.data.places || [], rootId
+    );
+    if (!adds.length) { toast('同一地点各辈分已经挂靠好了'); return; }
+    if (!confirm('将新增 ' + adds.length + ' 条同址挂靠关系（写进真实数据，会影响称谓推算与导出）。确定继续？')) return;
+    adds.forEach(function (r) { state.data.relations.push(r); });
+    saveData();
+    markUserModified();
+    renderAll(false);
+    if (state.openPlaceId && document.getElementById('infoCard').classList.contains('show')) openPlaceCard(state.openPlaceId);
+    if (document.getElementById('graphPanel').classList.contains('show')) renderGraph();
+    toast('已挂靠 ' + adds.length + ' 条同址关系');
+}
+
+function graphGenText(gen) {
+    if (gen == null) return '辈分未明';
+    if (gen < 0) return '高 ' + (-gen) + ' 辈';
+    if (gen > 0) return '低 ' + gen + ' 辈';
+    return '同辈';
+}
+
+// 两个矩形之间的净空：相交 = 0，否则是最近的横向/纵向间隙距离。
+// 用来给圈层文字挑一个不压人名框的位置。
+function graphBoxGap(a, b) {
+    var gx = Math.max(0, Math.max(a.x - (b.x + b.w), b.x - (a.x + a.w)));
+    var gy = Math.max(0, Math.max(a.y - (b.y + b.h), b.y - (a.y + a.h)));
+    return Math.sqrt(gx * gx + gy * gy);
+}
+
+function graphRingLabelPoint(g, ring) {
+    var tw = GraphLayout.textWidth(ring.label, 10) + 12;
+    var th = 16;
+    var best = { x: g.center.x, y: g.center.y - ring.r - 16, gap: -1 };
+    for (var deg = 0; deg < 360; deg += 6) {
+        var a = deg * Math.PI / 180;
+        var x = g.center.x + Math.cos(a) * (ring.r + 16);
+        var y = g.center.y + Math.sin(a) * (ring.r + 16);
+        var box = { x: x - tw / 2, y: y - th / 2, w: tw, h: th };
+        if (box.x < 4 || box.y < 4 || box.x + box.w > g.width - 4 || box.y + box.h > g.height - 4) continue;
+        var gap = Infinity;
+        for (var i = 0; i < g.nodes.length; i++) {
+            var n = g.nodes[i];
+            var nb = {
+                x: n.x - n.w / 2 - 5,
+                y: n.y - n.h / 2 - 5,
+                w: n.w + 10,
+                h: n.h + 10 + (n.titleText ? 16 : 0)
+            };
+            var d = graphBoxGap(box, nb);
+            if (d < gap) gap = d;
+        }
+        if (gap > best.gap) best = { x: x, y: y, gap: gap };
+        if (best.gap > 24) break;
+    }
+    return { x: best.x, y: best.y };
+}
+
+/* ---------- 关系图的平移 / 缩放 ---------- */
+
+var graphView = null;
+
+function stopGraphAnim() {
+    if (graphView && graphView.anim) {
+        cancelAnimationFrame(graphView.anim);
+        graphView.anim = 0;
+    }
+}
+
+function applyGraphTransform() {
+    if (!graphView || !graphView.vp) return;
+    var v = graphView;
+    var tx = Math.round(v.tx * 100) / 100;
+    var ty = Math.round(v.ty * 100) / 100;
+    var s = Math.round(v.scale * 1000) / 1000;
+    v.vp.setAttribute('transform', 'translate(' + tx + ' ' + ty + ') scale(' + s + ')');
+}
+
+function graphBodySize() {
+    var body = document.getElementById('graphBody');
+    return { w: body.clientWidth || 0, h: body.clientHeight || 0 };
+}
+
+// 限制平移范围：图比视口小时可以在视口内自由拖动，比视口大时最多留 48px 越界，
+// 这样既不会把图拖丢，也能像地图一样在边缘有一点回弹余地。
+function clampGraphView() {
+    if (!graphView) return;
+    var v = graphView;
+    var size = graphBodySize();
+    if (!size.w || !size.h) return;
+    if (v.scale < v.minScale) v.scale = v.minScale;
+    if (v.scale > v.maxScale) v.scale = v.maxScale;
+    var cw = v.g.width * v.scale;
+    var ch = v.g.height * v.scale;
+    var over = 48;
+    // 比视口小的图可以在视口内自由拖动；比视口大的图最多留 48px 越界，
+    // 既不会把图拖丢，也能像地图一样在边缘有一点回弹余地。
+    if (cw <= size.w) v.tx = Math.max(0, Math.min(size.w - cw, v.tx));
+    else v.tx = Math.max(size.w - cw - over, Math.min(over, v.tx));
+    if (ch <= size.h) v.ty = Math.max(0, Math.min(size.h - ch, v.ty));
+    else v.ty = Math.max(size.h - ch - over, Math.min(over, v.ty));
+}
+
+function setGraphView(t) {
+    if (!graphView) return;
+    graphView.scale = t.scale;
+    graphView.tx = t.tx;
+    graphView.ty = t.ty;
+    clampGraphView();
+    applyGraphTransform();
+}
+
+function animateGraphView(target, duration) {
+    if (!graphView) return;
+    stopGraphAnim();
+    var v = graphView;
+    var from = { scale: v.scale, tx: v.tx, ty: v.ty };
+    var start = Date.now();
+    duration = duration || 220;
+    function frame() {
+        if (!graphView || graphView !== v) return;
+        var t = Math.min(1, (Date.now() - start) / duration);
+        var e = 1 - Math.pow(1 - t, 3);
+        v.scale = from.scale + (target.scale - from.scale) * e;
+        v.tx = from.tx + (target.tx - from.tx) * e;
+        v.ty = from.ty + (target.ty - from.ty) * e;
+        clampGraphView();
+        applyGraphTransform();
+        if (t < 1) v.anim = requestAnimationFrame(frame);
+        else v.anim = 0;
+    }
+    v.anim = requestAnimationFrame(frame);
+}
+
+function zoomGraphAt(px, py, factor, animate) {
+    if (!graphView) return;
+    var v = graphView;
+    var t = GraphLayout.zoomTransform(
+        { scale: v.scale, tx: v.tx, ty: v.ty },
+        px, py, factor, v.minScale, v.maxScale
+    );
+    if (animate) animateGraphView(t, 200);
+    else setGraphView(t);
+}
+
+function fitGraphView(animate) {
+    if (!graphView) return;
+    var size = graphBodySize();
+    if (!size.w || !size.h) return;
+    var v = graphView;
+    var t = GraphLayout.fitTransform(v.g.width, v.g.height, size.w, size.h, 26, 0.05, 2.5);
+    v.fitScale = t.scale;
+    v.minScale = Math.min(0.08, t.scale * 0.45);
+    v.maxScale = Math.max(3.5, t.scale * 6);
+    if (animate) animateGraphView(t, 240);
+    else setGraphView(t);
+}
+
+// 拖动松手后的惯性：速度按 px/ms 记录，摩擦约 0.92/帧。
+function startGraphInertia(vx, vy) {
+    if (!graphView) return;
+    var v = graphView;
+    vx = Math.max(-2.5, Math.min(2.5, vx));
+    vy = Math.max(-2.5, Math.min(2.5, vy));
+    if (Math.abs(vx) + Math.abs(vy) < 0.02) return;
+    stopGraphAnim();
+    var last = Date.now();
+    function frame() {
+        if (!graphView || graphView !== v) return;
+        var now = Date.now();
+        var dt = Math.min(48, Math.max(1, now - last));
+        last = now;
+        v.tx += vx * dt;
+        v.ty += vy * dt;
+        clampGraphView();
+        applyGraphTransform();
+        var f = Math.pow(0.92, dt / 16.7);
+        vx *= f;
+        vy *= f;
+        if (Math.abs(vx) + Math.abs(vy) > 0.04) v.anim = requestAnimationFrame(frame);
+        else v.anim = 0;
+    }
+    v.anim = requestAnimationFrame(frame);
+}
+
+function bindGraphEvents(svg) {
+    if (!graphView) return;
+    var v = graphView;
+
+    function local(e) {
+        var r = v.body.getBoundingClientRect();
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+    function pointerIds() { return Object.keys(v.pointers); }
+    function pointerCount() { return pointerIds().length; }
+
+    svg.addEventListener('pointerdown', function (e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        stopGraphAnim();
+        var p = local(e);
+        v.pointers[e.pointerId] = {
+            x: p.x, y: p.y, lx: p.x, ly: p.y, lt: Date.now(), vx: 0, vy: 0
+        };
+        v.moved = false;
+        if (pointerCount() === 1) {
+            v.pinch = null;
+            v.drag = { id: e.pointerId, tx: v.tx, ty: v.ty, startX: p.x, startY: p.y, active: false };
+        } else if (pointerCount() === 2) {
+            var ids = pointerIds();
+            var a = v.pointers[ids[0]];
+            var b = v.pointers[ids[1]];
+            v.pinch = {
+                ids: ids,
+                d0: Math.max(1, Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2))),
+                mid0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+                view0: { scale: v.scale, tx: v.tx, ty: v.ty }
+            };
+            v.drag = null;
+            v.moved = true; // 双指手势不算点击
+        }
+    });
+
+    svg.addEventListener('pointermove', function (e) {
+        var p = v.pointers[e.pointerId];
+        if (!p) return;
+        var loc = local(e);
+        var now = Date.now();
+        var dt = Math.max(1, now - (p.lt || now));
+        p.vx = (loc.x - p.lx) / dt;
+        p.vy = (loc.y - p.ly) / dt;
+        p.lx = loc.x;
+        p.ly = loc.y;
+        p.lt = now;
+        p.x = loc.x;
+        p.y = loc.y;
+
+        if (v.pinch) {
+            var ids = v.pinch.ids;
+            var a = v.pointers[ids[0]];
+            var b = v.pointers[ids[1]];
+            if (!a || !b) return;
+            var mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+            var d = Math.max(1, Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2)));
+            var t = GraphLayout.zoomTransform(
+                v.pinch.view0, v.pinch.mid0.x, v.pinch.mid0.y,
+                d / v.pinch.d0, v.minScale, v.maxScale
+            );
+            t.tx += mid.x - v.pinch.mid0.x;
+            t.ty += mid.y - v.pinch.mid0.y;
+            setGraphView(t);
+            e.preventDefault();
+            return;
+        }
+
+        if (v.drag && v.drag.id === e.pointerId) {
+            var dx = loc.x - v.drag.startX;
+            var dy = loc.y - v.drag.startY;
+            if (!v.drag.active && Math.abs(dx) + Math.abs(dy) > 3) {
+                v.drag.active = true;
+                v.moved = true;
+                try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+                svg.classList.add('dragging');
+            }
+            if (v.drag.active) {
+                v.tx = v.drag.tx + dx;
+                v.ty = v.drag.ty + dy;
+                clampGraphView();
+                applyGraphTransform();
+                e.preventDefault();
+            }
+        }
+    });
+
+    function endPointer(e) {
+        var p = v.pointers[e.pointerId];
+        if (!p) return;
+        var wasDrag = !!(v.drag && v.drag.id === e.pointerId && v.drag.active);
+        var wasPinch = !!v.pinch;
+
+        if (v.pinch && (e.pointerId === v.pinch.ids[0] || e.pointerId === v.pinch.ids[1])) {
+            v.pinch = null;
+            delete v.pointers[e.pointerId];
+            var rest = pointerIds();
+            if (rest.length === 1) {
+                var q = v.pointers[rest[0]];
+                v.drag = { id: rest[0], tx: v.tx, ty: v.ty, startX: q.x, startY: q.y, active: false };
+            }
+        } else {
+            delete v.pointers[e.pointerId];
+            if (v.drag && v.drag.id === e.pointerId) {
+                v.drag = null;
+                if (wasDrag) startGraphInertia(p.vx, p.vy);
+            }
+        }
+
+        if (wasDrag || wasPinch) {
+            // 等 click 事件走完再恢复，避免拖完手一松就触发「点击定位」
+            setTimeout(function () {
+                if (graphView === v) v.moved = false;
+            }, 0);
+        }
+        try {
+            if (svg.hasPointerCapture && svg.hasPointerCapture(e.pointerId)) {
+                svg.releasePointerCapture(e.pointerId);
+            }
+        } catch (err2) {}
+        if (!pointerCount()) svg.classList.remove('dragging');
+    }
+    svg.addEventListener('pointerup', endPointer);
+    svg.addEventListener('pointercancel', endPointer);
+
+    svg.addEventListener('wheel', function (e) {
+        e.preventDefault();
+        var p = local(e);
+        var dy = e.deltaY;
+        if (e.deltaMode === 1) dy *= 16;
+        else if (e.deltaMode === 2) dy *= 100;
+        zoomGraphAt(p.x, p.y, Math.exp(-dy * 0.0018), false);
+    }, { passive: false });
+
+    svg.addEventListener('dblclick', function (e) {
+        e.preventDefault();
+        var p = local(e);
+        if (v.scale >= v.fitScale * 1.5) fitGraphView(true);
+        else zoomGraphAt(p.x, p.y, 1.9, true);
+    });
+
+    Array.prototype.forEach.call(v.body.querySelectorAll('[data-gzoom]'), function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var act = btn.getAttribute('data-gzoom');
+            if (act === 'fit') {
+                fitGraphView(true);
+                return;
+            }
+            var size = graphBodySize();
+            zoomGraphAt(size.w / 2, size.h / 2, act === 'in' ? 1.45 : 1 / 1.45, true);
+        });
+    });
+}
+
 function renderGraph() {
     var body = document.getElementById('graphBody');
+    stopGraphAnim();
+    graphView = null;
     if (!state.data.persons.length) {
         body.innerHTML = '<div class="graph-empty">还没有人物数据，先在地图上添加人物</div>';
         return;
@@ -3000,14 +3347,11 @@ function renderGraph() {
         body.innerHTML = '<div class="graph-empty">称谓推算暂不可用：检查人物关系数据</div>';
         return;
     }
-    var g = GraphLayout.layout({
+    var g = GraphLayout.radial({
         persons: state.data.persons,
         relations: state.data.relations,
         labels: k.labels,
-        places: state.data.places || [],
-        rootId: rootId,
-        wrap: true,
-        panelWidth: body.clientWidth || 0
+        rootId: rootId
     });
     if (!g.nodes.length) {
         body.innerHTML = '<div class="graph-empty">还没有可排布的人物</div>';
@@ -3016,82 +3360,108 @@ function renderGraph() {
     function r1(v) { return Math.round(v * 10) / 10; }
 
     var parts = [];
-    // 世系参考线：每个物理行一条淡虚线 + 左侧「第几世」
-    g.rows.forEach(function (row) {
-        (row.ys || [row.y]).forEach(function (y, yi) {
-            var ly = r1(y + 18);
-            parts.push('<line class="g-gen-tick" x1="' + (GraphLayout.LEFT_W + 6) + '" y1="' + ly +
-                '" x2="' + r1(g.width - 12) + '" y2="' + ly + '"></line>');
-            if (yi === 0) {
-                parts.push('<text class="g-gen-label' + (row.isRootRow ? ' root' : '') + '" x="' +
-                    (GraphLayout.LEFT_W - 8) + '" y="' + r1(y + 23) + '" text-anchor="end">' +
-                    esc(row.label) + '</text>');
-                if (row.isRootRow) {
-                    parts.push('<text class="g-gen-me" x="' + (GraphLayout.LEFT_W - 8) + '" y="' +
-                        r1(y + 39) + '" text-anchor="end">我</text>');
-                }
-            }
-        });
+    var outerR = g.rings.length ? g.rings[g.rings.length - 1].r : 0;
+
+    // 蛛网骨架：12 条辐条 + 每圈一条虚线圆
+    for (var si = 0; si < 12; si++) {
+        var sa = si * Math.PI / 6;
+        parts.push('<line class="g-spoke" x1="' + r1(g.center.x) + '" y1="' + r1(g.center.y) +
+            '" x2="' + r1(g.center.x + Math.cos(sa) * outerR) +
+            '" y2="' + r1(g.center.y + Math.sin(sa) * outerR) + '"></line>');
+    }
+    g.rings.forEach(function (ring) {
+        parts.push('<circle class="g-ring' + (ring.unreach ? ' g-ring-unreach' : '') +
+            '" cx="' + r1(g.center.x) + '" cy="' + r1(g.center.y) + '" r="' + r1(ring.r) + '"></circle>');
+    });
+    g.rings.forEach(function (ring) {
+        var lp = graphRingLabelPoint(g, ring);
+        parts.push('<text class="g-ring-label' + (ring.unreach ? ' unreach' : '') +
+            '" x="' + r1(lp.x) + '" y="' + r1(lp.y + 3.5) + '" text-anchor="middle">' +
+            esc(ring.label) + '</text>');
     });
 
-    // 地点分组大框：同一世、同一地点的人圈在一起（画在世线之上、连线/名框之下）
-    g.groups.forEach(function (gp) {
-        parts.push('<rect class="g-group" x="' + r1(gp.x) + '" y="' + r1(gp.y) +
-            '" width="' + r1(gp.w) + '" height="' + r1(gp.h) + '" rx="12"></rect>');
-        if (gp.label) {
-            parts.push('<text class="g-group-label" x="' + r1(gp.x + 8) + '" y="' +
-                r1(gp.y + 12) + '">' + esc(gp.label) + '</text>');
-        }
-    });
-
-    // 关系线：父母→子女的下垂线/兄弟横杆、夫妻婚线保持醒目；
-    // 旁系/兄弟姐妹线默认变淡（g-edge-dim），悬停高亮时恢复
+    // 关系线：父母子女走径向直连，配偶/兄弟姐妹/旁系走外弧；
+    // 旁系与兄弟姐妹线默认变淡，悬停关系链时经 .hl 恢复
     g.edges.forEach(function (e) {
         var ri = esc(e.ris.join(' '));
-        if (e.kind === 'descent') {
-            parts.push('<path class="g-edge g-edge-descent" data-ri="' + ri + '" d="' + e.d + '">' +
-                '<title>' + esc(e.title) + '</title></path>');
-        } else if (e.kind === 'spouse') {
-            parts.push('<line class="g-edge g-edge-spouse" data-ri="' + ri + '" x1="' + r1(e.x1) +
-                '" y1="' + r1(e.y1) + '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '">' +
-                '<title>配偶</title></line>');
-        } else if (e.d) {
-            parts.push('<path class="g-edge g-edge-dim" data-ri="' + ri + '" d="' + e.d + '">' +
-                '<title>' + esc(e.title) + '</title></path>');
-        } else {
-            parts.push('<line class="g-edge g-edge-dim" data-ri="' + ri + '" x1="' + r1(e.x1) + '" y1="' + r1(e.y1) +
-                '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '"><title>' + esc(e.title) + '</title></line>');
-        }
+        var cls = 'g-edge';
+        if (e.kind === 'descent') cls += ' g-edge-descent';
+        else if (e.kind === 'spouse') cls += ' g-edge-spouse';
+        else cls += ' g-edge-dim';
+        if (e.curved) cls += ' g-edge-arc';
+        parts.push('<path class="' + cls + '" data-ri="' + ri + '" d="' + e.d + '">' +
+            '<title>' + esc(e.title) + '</title></path>');
     });
 
-    // 关系文字（已做过避让，带背景色描边，压线也能看清；旁系的默认变淡）
+    // 关系文字（布局层已做避让，带背景色描边，压线也能看清）
     g.labels.forEach(function (l) {
         parts.push('<text class="g-edge-label' + (l.dim ? ' g-label-dim' : '') +
             '" data-ri="' + esc(l.ris.join(' ')) + '" x="' + r1(l.x) +
             '" y="' + r1(l.y) + '" text-anchor="' + l.anchor + '">' + esc(l.text) + '</text>');
     });
 
-    // 名框：族谱式方框，框内姓名、框下称谓
+    // 名框：姓名在框内居中，称谓在框下；「我」加一圈光晕标出圆心
     g.nodes.forEach(function (n) {
         var tip = n.name + (n.title ? ' · ' + n.title : '');
         if (n.alias && n.alias.length) tip += '（又叫 ' + n.alias.join('、') + '）';
-        parts.push('<g class="g-node' + (n.isRoot ? ' root' : '') + '" data-id="' + esc(n.id) + '">' +
-            '<title>' + esc(tip) + '</title>' +
-            '<rect x="' + r1(n.x - n.w / 2) + '" y="' + r1(n.y) + '" width="' + r1(n.w) +
-            '" height="' + g.boxH + '" rx="8"></rect>' +
-            '<text class="g-node-name" x="' + r1(n.x) + '" y="' + r1(n.y + 23) + '">' + esc(n.name) + '</text>' +
-            (n.titleText ? '<text class="g-node-title" x="' + r1(n.x) + '" y="' + r1(n.y + 52) + '">' +
-                esc(n.titleText) + '</text>' : '') +
-            '</g>');
+        tip += n.isRoot ? ' · 圆心' : (n.unreach ? ' · 未连通' : ' · ' + graphGenText(n.gen));
+        var top = n.y - n.h / 2;
+        parts.push('<g class="g-node' + (n.isRoot ? ' root' : '') + (n.unreach ? ' unreach' : '') +
+            '" data-id="' + esc(n.id) + '">' +
+            '<title>' + esc(tip) + '</title>');
+        if (n.isRoot) {
+            parts.push('<circle class="g-root-halo" cx="' + r1(n.x) + '" cy="' + r1(n.y) +
+                '" r="' + r1(Math.max(n.w / 2 + 12, 38)) + '"></circle>');
+        }
+        parts.push('<rect x="' + r1(n.x - n.w / 2) + '" y="' + r1(top) + '" width="' + r1(n.w) +
+            '" height="' + r1(n.h) + '" rx="8"></rect>' +
+            '<text class="g-node-name" x="' + r1(n.x) + '" y="' + r1(n.y + 4) + '">' +
+            esc(n.nameText || n.name) + '</text>');
+        if (n.titleText) {
+            parts.push('<text class="g-node-title" x="' + r1(n.x) + '" y="' +
+                r1(top + n.h + 15) + '">' + esc(n.titleText) + '</text>');
+        }
+        parts.push('</g>');
     });
 
-    // 自适应折行由布局层完成，这里按实际尺寸绘制，不再整体缩放（避免文字过小）
-    body.innerHTML = '<svg class="graph-svg" width="' + g.width + '" height="' + g.height +
-        '" viewBox="0 0 ' + g.width + ' ' + g.height + '">' + parts.join('') + '</svg>';
+    body.innerHTML = '<svg class="graph-svg" role="img" aria-label="人物关系蛛网图">' +
+        '<g class="graph-vp">' + parts.join('') + '</g></svg>' +
+        '<div class="graph-legend">' +
+        '<span class="lg"><i class="center"></i>中心：我</span>' +
+        '<span class="lg"><i class="ring"></i>圈层：世代（一世最高，越内辈分越大）</span>' +
+        '<span class="lg"><i class="line desc"></i>父母/子女</span>' +
+        '<span class="lg"><i class="line spouse"></i>配偶</span>' +
+        '<span class="lg"><i class="line other"></i>其他/未连通</span>' +
+        '</div>' +
+        '<div class="graph-zoom" role="group" aria-label="关系图缩放">' +
+        '<button type="button" data-gzoom="in" aria-label="放大">＋</button>' +
+        '<button type="button" data-gzoom="out" aria-label="缩小">－</button>' +
+        '<button type="button" data-gzoom="fit" aria-label="适应窗口">⤢</button>' +
+        '</div>';
+
     var svg = body.querySelector('svg');
+    graphView = {
+        g: g,
+        k: k,
+        body: body,
+        vp: body.querySelector('.graph-vp'),
+        scale: 1, tx: 0, ty: 0,
+        fitScale: 1, minScale: 0.08, maxScale: 4,
+        pointers: {}, drag: null, pinch: null,
+        moved: false, anim: 0
+    };
+    bindGraphEvents(svg);
+    fitGraphView(false);
+
     Array.prototype.forEach.call(svg.querySelectorAll('.g-node'), function (gEl) {
         var id = gEl.getAttribute('data-id');
+        var node = g.nodes.filter(function (n) { return n.id === id; })[0];
         gEl.addEventListener('click', function () {
+            if (graphView && graphView.moved) return;
+            if (node && node.isRoot) {
+                toast('圆心就是「我」');
+                return;
+            }
             closeGraph();
             jumpToPerson(id);
         });
@@ -3216,6 +3586,7 @@ var ACTIONS = {
     deletePersonById: function (el) { deletePersonById(el.dataset.id); },
     openGraph: openGraph,
     autoFillRelations: function () { autoFillRelations(); },
+    attachPlaceGenerations: function () { attachPlaceGenerations(); },
     importData: importData,
     exportData: exportData,
     clearAll: clearAll,

@@ -38,8 +38,6 @@
   // 其余晚辈（儿子/女儿/侄子/侄女/外甥/外甥女）仍是下一辈（+1）。
   var TYPE_DELTA = {
     '爷爷': -2, '奶奶': -2, '外公': -2, '外婆': -2,
-    // 大婆 = 爷爷辈里最大的那位（奶奶）：同为祖辈上两代
-    '大婆': -2,
     '孙子': 2, '孙女': 2, '外孙': 2, '外孙女': 2
   };
 
@@ -72,7 +70,7 @@
   var TERMS = {
     /* 祖辈 */
     '爷爷': { alias: ['祖父', '阿公'] },
-    '奶奶': { alias: ['祖母', '阿婆', '大婆'] },
+    '奶奶': { alias: ['祖母', '阿婆'] },
     '外公': { alias: ['外祖父', '姥爷', '外爷'] },
     '外婆': { alias: ['外祖母', '姥姥', '姥娘'] },
     '伯祖': { alias: ['伯祖父', '伯公', '大爷爷'] },
@@ -88,6 +86,7 @@
     /* 父辈 */
     '父亲': { alias: ['爸爸', '爸'] },
     '母亲': { alias: ['妈妈', '娘', '妈'] },
+    // 本项目家族：父亲这边按和父亲比的排行叫——「爹」=父亲的哥哥(伯父)，不是直系父亲
     // 本项目家族：父亲这边按和父亲比的排行叫——「爹」=父亲的哥哥(伯父)，不是直系父亲
     '伯父': { alias: ['伯伯', '大伯', '大爷', '爹'] },
     '叔父': { alias: ['叔叔', '叔'] },
@@ -589,7 +588,7 @@
 
   /* ===== 夫妻互称：关系从哪一侧录入，都能认出另一半 ===== */
   var COUPLES = [
-    ['爷爷', '奶奶'], ['爷爷', '大婆'], ['外公', '外婆'],
+    ['爷爷', '奶奶'], ['外公', '外婆'],
     ['曾祖父', '曾祖母'], ['高祖父', '高祖母'], ['天祖父', '天祖母'],
     ['烈祖父', '烈祖母'], ['太祖父', '太祖母'], ['远祖父', '远祖母'], ['鼻祖', '鼻祖母'],
     ['外曾祖父', '外曾祖母'], ['外高祖父', '外高祖母'], ['外天祖父', '外天祖母'],
@@ -650,7 +649,6 @@
     '母亲': function (n) { return gendered(n, '儿子', '女儿', '儿女'); },
     '祖父': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '奶奶': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
-    '大婆': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '爷爷': function (n) { return gendered(n, '孙子', '孙女', '孙辈'); },
     '外公': function (n) { return gendered(n, '外孙', '外孙女', '外孙辈'); },
     '外婆': function (n) { return gendered(n, '外孙', '外孙女', '外孙辈'); },
@@ -751,8 +749,6 @@
     externalResolver = typeof fn === 'function' ? fn : null;
   }
 
-  // 本项目约定：关系链算出的曾祖辈（曾/高/天/烈/太/远/鼻祖）显示时统一降为爷爷辈，
-  // 「曾外祖母」也显示成「奶奶」（不再区分外系曾祖）。只改显示/称谓，不改 gen 计算。
   // 本项目家族：父亲这边按和父亲比的排行叫，名字含「爹」的男性一律显示伯父
   // （关系边可能把它推成父亲/姑姑等，这里只在推错时覆盖）。
   function normalizeElderTitle(label, person) {
@@ -761,24 +757,13 @@
     if (/爹/.test(nm) && (!person || person.gender !== 'f')) {
       return s === '伯父' ? s : '伯父';
     }
-    if (!s) return label;
-    // 只规范正名，不碰「A的B」这类路径称谓
-    if (/祖[父母]?$|祖母$|祖父$/.test(s) && /^(曾|高|天|烈|太|远|鼻|外曾|曾外|外高|外天)/.test(s)) {
-      return /母$/.test(s) ? '奶奶' : '爷爷';
-    }
-    if (/^(曾祖母|曾祖父|曾外祖母|曾外祖父|外曾祖母|外曾祖父|高祖母|高祖父)$/.test(s)) {
-      return /母$/.test(s) ? '奶奶' : '爷爷';
-    }
     return label;
   }
 
-  // 规范化 + 本项目显示约定（曾祖辈降为爷爷/奶奶、名字含「爹」强制伯父）。
+  // 规范化 + 本项目显示约定（名字含「爹」强制伯父）。
   function normalizeLabel(label, person) {
     var s = String(label == null ? '' : label).trim();
     if (!s) return s;
-    // 本项目：名字就叫「大婆」的人，称谓按原值显示，不转成正名「奶奶」
-    var nm = person && person.name ? String(person.name).trim() : '';
-    if (nm === '大婆' || s === '大婆') return s;
     if (s.indexOf('/') < 0) return normalizeElderTitle(canonicalTitle(s), person);
     var out = [];
     s.split('/').forEach(function (part) {
@@ -1099,16 +1084,12 @@
   }
 
   // 排行（"23公" → 23；没有排行前缀返回 null）
-  // 「大X」= 同辈里最大的（大婆 = 奶奶辈最大），排行按 0，排最前
   function rankOf(name) {
-    var s = String(name == null ? '' : name).trim();
-    if (/^大[公婆爷奶叔伯姑舅姨哥姐弟妹亲]/.test(s)) return 0;
     return splitRank(name).rank;
   }
 
   // 称谓定世：认「祖辈称谓」，供关系图在关系边缺失/推错时兜底。
   // 称谓都是相对「我」叫的，返回的代数就是相对根的偏移。
-  // 本项目约定：爷爷辈及更远的直系尊亲（曾/高/天/烈/太/远/鼻祖）都按上两代(-2)归一世。
   function titleDelta(title) {
     var t = String(title == null ? '' : title).trim();
     if (!t) return null;
@@ -1119,9 +1100,6 @@
       var al = TERMS[k].alias || [];
       if (k === t || al.indexOf(t) >= 0) {
         if (TYPE_DELTA[k] !== undefined) return TYPE_DELTA[k];
-        // 曾祖辈及更远：称谓或别名含「曾/高/天/烈/太/远/鼻 + 祖」的，按爷爷辈 -2
-        if (/^(曾|高|天|烈|太|远|鼻|外曾|曾外|外高|外天)/.test(t) && /祖/.test(t)) return -2;
-        if (/^(曾|高|天|烈|太|远|鼻|外曾|曾外)/.test(k) && /祖/.test(k)) return -2;
       }
     }
     return null;
@@ -1292,6 +1270,80 @@
     return added;
   }
 
+  // 同址辈分挂靠：同一地点里辈分低的人，逐级挂到刚好高一辈的人下面；
+  // 中间缺辈时挂到该地点最高辈。返回「新增的真实关系」，由调用方决定是否保存。
+  function attachSamePlaceGenerations(persons, relations, places, rootId) {
+    persons = persons || [];
+    relations = relations || [];
+    places = places || [];
+    var result = compute(rootId, persons, relations);
+    var labels = result.labels || {};
+    var pmap = {};
+    persons.forEach(function (p) { if (p && p.id) pmap[p.id] = p; });
+    var rels = relations.slice();
+
+    function guessGen(p) {
+      if (p.id === rootId) return 0;
+      var l = labels[p.id];
+      if (l && typeof l.gen === 'number') return l.gen;
+      var srcs = (p.titles || []).concat([p.name]);
+      for (var i = 0; i < srcs.length; i++) {
+        var s = String(srcs[i] == null ? '' : srcs[i]).trim();
+        if (!s) continue;
+        var d = titleDelta(s);
+        if (typeof d === 'number' && d !== 0) return d;
+        if (/公|婆/.test(s)) return -2;
+        if (/爹|叔|姑|妈|娘/.test(s)) return -1;
+      }
+      return null;
+    }
+
+    function hasRelation(a, b) {
+      for (var i = 0; i < rels.length; i++) {
+        var r = rels[i];
+        if ((r.from === a && r.to === b) || (r.from === b && r.to === a)) return true;
+      }
+      return false;
+    }
+
+    var placeIds = [];
+    places.forEach(function (pl) {
+      if (pl && pl.id && placeIds.indexOf(pl.id) < 0) placeIds.push(pl.id);
+    });
+    persons.forEach(function (p) {
+      if (p && p.placeId && placeIds.indexOf(p.placeId) < 0) placeIds.push(p.placeId);
+    });
+
+    var added = [];
+    placeIds.forEach(function (pid) {
+      var people = persons.filter(function (p) {
+        return p && p.id && p.id !== rootId && p.placeId === pid && guessGen(p) != null;
+      }).map(function (p) {
+        return { id: p.id, gender: p.gender, gen: guessGen(p) };
+      }).sort(function (a, b) { return a.gen - b.gen; });
+      if (people.length < 2) return;
+
+      var highest = people[0].gen;
+      people.forEach(function (p) {
+        if (p.gen === highest) return;
+        // 优先挂到刚好高一辈；没有就挂到本地点最高辈（用户选择的「逐级挂高一辈」）
+        var target = null;
+        for (var i = people.length - 1; i >= 0; i--) {
+          if (people[i].gen === p.gen - 1) { target = people[i]; break; }
+        }
+        if (!target) target = people[0];
+        if (!target || target.id === p.id || hasRelation(target.id, p.id)) return;
+        var person = pmap[p.id];
+        var elder = pmap[target.id];
+        var type = elder && elder.gender === 'f' ? '母亲' : '父亲';
+        var edge = { from: target.id, to: p.id, type: type };
+        added.push(edge);
+        rels.push(edge); // 让同一批次里后续判断也看到新关系
+      });
+    });
+    return added;
+  }
+
   global.Kinship = {
     TYPE_GROUPS: TYPE_GROUPS,
     TERMS: TERMS,
@@ -1309,6 +1361,7 @@
     titleDelta: titleDelta,
     baseTitle: baseTitle,
     matchStrength: matchStrength,
-    buildRelations: buildRelations
+    buildRelations: buildRelations,
+    attachSamePlaceGenerations: attachSamePlaceGenerations
   };
 })(typeof window !== 'undefined' ? window : globalThis);

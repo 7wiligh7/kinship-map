@@ -51,6 +51,11 @@ var GraphLayout = (function () {
     var FATHER_TYPES = { '父亲': 1, '母亲': 1 };
     var CHILD_TYPES = { '儿子': 1, '女儿': 1 };
     var SIBLING_TYPES = { '哥哥': 1, '弟弟': 1, '姐姐': 1, '妹妹': 1 };
+    // 直系：父母 / 祖父母 / 子女 / 孙子女（不含配偶与兄弟姐妹）
+    var LINEAL_TYPES = {
+        '父亲': 1, '母亲': 1, '爷爷': 1, '奶奶': 1, '外公': 1, '外婆': 1, '大婆': 1,
+        '儿子': 1, '女儿': 1, '孙子': 1, '孙女': 1, '外孙': 1, '外孙女': 1
+    };
     var TYPE_ORDER = { '父亲': 0, '母亲': 1, '儿子': 2, '女儿': 3 };
 
     function pairKey(a, b) {
@@ -224,7 +229,7 @@ var GraphLayout = (function () {
             if (!l) { unreach.push(p); return; }
             var title = l.label || '';
             // 称谓定世兜底：称谓（关系边推出的 label / 手填 titles / 名字）里若明确是祖辈词
-            // （大婆/奶奶/爷爷…），用它覆盖关系边推出的世代，避免"大婆"被连错成二世。
+            // （奶奶/爷爷…），用它覆盖关系边推出的世代，避免被连错辈分。
             var gen = l.gen;
             var titleWords = [l.label].concat(p.titles || [], [p.name]);
             for (var ti = 0; ti < titleWords.length; ti++) {
@@ -942,6 +947,794 @@ var GraphLayout = (function () {
         function r1(v) { return Math.round(v * 10) / 10; }
     }
 
+    /* ---------- 蛛网/放射布局（radial） ----------
+       中心 = 「我」，每往外一圈 = 关系链多一步：
+       第 1 圈：父母、配偶、子女、兄弟姐妹（只登记了共同父母时，兄弟姐妹也算 1 步）
+       第 2 圈：祖父母、孙子女、伯叔姑舅姨、侄甥、姻亲父母
+       第 3 圈起：堂表兄弟姐妹等更远关系；没有任何关系边的放最外圈「未连通」。
+       角度先按 BFS 家族分支分配，再按圈内名框宽度做间距修正，保证不叠字。 */
+
+    var R_NODE_H = 30;
+    var R_MIN_W = 56;
+    var R_MAX_W = 176;
+    var R_NODE_GAP = 16;
+    var R_RING_GAP = 118;
+    var R_FIRST_RING = 148;
+    var R_CANVAS_PAD = 56;
+    var R_TAU = Math.PI * 2;
+    var R_START = Math.PI * 1.5; // 从正上方开始，顺时针排家族分支
+
+    function normAngle(a) {
+        a = a % R_TAU;
+        return a < 0 ? a + R_TAU : a;
+    }
+
+    function radial(input) {
+        input = input || {};
+        var persons = input.persons || [];
+        var relations = input.relations || [];
+        var labels = input.labels || {};
+        var rootId = input.rootId || null;
+
+        /* ---------- 1. 收集：所有人先进 info（没连通的人也要画在最外圈） ---------- */
+        var people = {};
+        var info = {};
+        var order = 0;
+
+        persons.forEach(function (p) {
+            if (!p || !p.id) return;
+            people[p.id] = p;
+            var l = labels[p.id];
+            var title = l ? (l.label || '') : '';
+            var titleText = title ? fitText(title, 10, 160) : '';
+            var titleW = titleText ? textWidth(titleText, 10) + 10 : 0;
+            var w = Math.min(R_MAX_W, Math.max(R_MIN_W, textWidth(p.name, 12) + 24));
+            info[p.id] = {
+                id: p.id,
+                name: p.name || '',
+                nameText: fitText(p.name || '', 12, w - 12),
+                title: title,
+                titleText: titleText,
+                titleW: Math.max(w, titleW),
+                alias: l && l.alias ? l.alias : [],
+                titles: p.titles || [],
+                labelGen: l && typeof l.gen === 'number' ? l.gen : null,
+                gender: p.gender || '',
+                placeId: p.placeId != null ? p.placeId : null,
+                rank: rankOf(p.name),
+                isRoot: p.id === rootId,
+                order: order++,
+                w: w,
+                h: R_NODE_H,
+                depth: null,
+                gen: null,
+                angle: 0,
+                angled: false,
+                r: 0,
+                x: 0,
+                y: 0,
+                unreach: false
+            };
+        });
+
+        if (!rootId || !info[rootId]) {
+            var firstId = null;
+            persons.forEach(function (p) {
+                if (firstId === null && p && info[p.id]) firstId = p.id;
+            });
+            rootId = firstId;
+        }
+        if (!rootId) {
+            return {
+                width: 0, height: 0, center: { x: 0, y: 0 }, rings: [],
+                nodes: [], edges: [], labels: [], maxDepth: 0, boxH: R_NODE_H
+            };
+        }
+        info[rootId].isRoot = true;
+
+        /* ---------- 2. 转化：关系归一化后建邻接表（兄弟姐妹按共同父母补边） ---------- */
+        var norm = normalizeRelations(relations, people);
+        var adj = {};
+        var linealPair = {};
+        relations.forEach(function (r) {
+            if (r && LINEAL_TYPES[r.type]) linealPair[pairKey(r.from, r.to)] = true;
+        });
+
+        function addAdj(a, b, prio, kind) {
+            if (!info[a] || !info[b] || a === b) return;
+            var list = adj[a] || (adj[a] = []);
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].id === b) {
+                    if (prio < list[i].prio) { list[i].prio = prio; list[i].kind = kind; }
+                    return;
+                }
+            }
+            list.push({ id: b, prio: prio, kind: kind });
+        }
+
+        norm.parents.forEach(function (l) {
+            addAdj(l.parentId, l.childId, 0, 'parent');
+            addAdj(l.childId, l.parentId, 0, 'parent');
+        });
+        norm.spouses.forEach(function (l) {
+            addAdj(l.a, l.b, 1, 'spouse');
+            addAdj(l.b, l.a, 1, 'spouse');
+        });
+        norm.siblings.forEach(function (l) {
+            addAdj(l.a, l.b, 3, 'sibling');
+            addAdj(l.b, l.a, 3, 'sibling');
+        });
+        norm.kin.forEach(function (l) {
+            addAdj(l.a, l.b, 4, 'kin');
+            addAdj(l.b, l.a, 4, 'kin');
+        });
+
+        // 只登记了「父亲/母亲」的兄弟姐妹：补一条 1 步边，避免哥哥被算成第 2 圈
+        var kidsByParent = {};
+        norm.parents.forEach(function (l) {
+            (kidsByParent[l.parentId] = kidsByParent[l.parentId] || []).push(l.childId);
+        });
+        Object.keys(kidsByParent).forEach(function (pid) {
+            var kids = kidsByParent[pid];
+            for (var i = 0; i < kids.length; i++) {
+                for (var j = i + 1; j < kids.length; j++) {
+                    addAdj(kids[i], kids[j], 3, 'sibling');
+                    addAdj(kids[j], kids[i], 3, 'sibling');
+                }
+            }
+        });
+
+        // 「我」的直系分类：用于决定蛛网朝向（父母在上、配偶在右、子女在下、兄弟姐妹在左）
+        var rootKind = {};
+        norm.parents.forEach(function (l) {
+            if (l.childId === rootId) rootKind[l.parentId] = 'parent';
+            if (l.parentId === rootId) rootKind[l.childId] = 'child';
+        });
+        norm.spouses.forEach(function (l) {
+            if (l.a === rootId) rootKind[l.b] = rootKind[l.b] || 'spouse';
+            if (l.b === rootId) rootKind[l.a] = rootKind[l.a] || 'spouse';
+        });
+        norm.siblings.forEach(function (l) {
+            if (l.a === rootId) rootKind[l.b] = rootKind[l.b] || 'sibling';
+            if (l.b === rootId) rootKind[l.a] = rootKind[l.a] || 'sibling';
+        });
+        Object.keys(kidsByParent).forEach(function (pid) {
+            var kids = kidsByParent[pid];
+            for (var i = 0; i < kids.length; i++) {
+                for (var j = i + 1; j < kids.length; j++) {
+                    if (kids[i] === rootId) rootKind[kids[j]] = rootKind[kids[j]] || 'sibling';
+                    if (kids[j] === rootId) rootKind[kids[i]] = rootKind[kids[i]] || 'sibling';
+                }
+            }
+        });
+
+        function rootNbrPrio(entry) {
+            var k = rootKind[entry.id];
+            if (k === 'parent') return 0;
+            if (k === 'spouse') return 1;
+            if (k === 'child') return 2;
+            if (k === 'sibling') return 3;
+            return 4;
+        }
+
+        /* ---------- 3. 角度用的 BFS 树 + 圈层改按「辈分」排 ----------
+           圆心仍是「我」，但其他人的圈层不再按关系步数，而是按辈分：
+           辈分越高（gen 越小，如爷爷 -2）越靠近圆心；一世 = 最高辈。
+           BFS 树只用来决定同一家族分支的角度，不再决定半径。 */
+
+        var bfs = {};
+        var treeParent = {};
+        var treeChildren = {};
+        var queue = [rootId];
+        var head = 0;
+        bfs[rootId] = 0;
+        treeParent[rootId] = null;
+
+        while (head < queue.length) {
+            var cur = queue[head++];
+            var nbrs = (adj[cur] || []).slice().sort(function (a, b) {
+                // 「我」的邻居按直系优先级排：父母 → 配偶 → 子女 → 兄弟姐妹 → 其他
+                var pa = cur === rootId ? rootNbrPrio(a) : a.prio;
+                var pb = cur === rootId ? rootNbrPrio(b) : b.prio;
+                if (pa !== pb) return pa - pb;
+                return info[a.id].order - info[b.id].order;
+            });
+            for (var ni = 0; ni < nbrs.length; ni++) {
+                var nid = nbrs[ni].id;
+                if (bfs[nid] !== undefined) continue;
+                bfs[nid] = bfs[cur] + 1;
+                treeParent[nid] = cur;
+                (treeChildren[cur] = treeChildren[cur] || []).push(nid);
+                queue.push(nid);
+            }
+        }
+
+        // 称谓推算没覆盖到的人（包括未连通的），用手填称谓 / 名字关键字兜底估辈分
+        function estimateGen(n) {
+            var srcs = (n.titles || []).concat([n.name]);
+            for (var i = 0; i < srcs.length; i++) {
+                var s = String(srcs[i] == null ? '' : srcs[i]).trim();
+                if (!s) continue;
+                if (K && typeof K.titleDelta === 'function') {
+                    var d = K.titleDelta(s);
+                    if (typeof d === 'number' && !isNaN(d) && d !== 0) return d;
+                }
+                var off = nameGenOffset(s);
+                if (off !== null) return off;
+            }
+            return null;
+        }
+
+        var genValues = [];
+        Object.keys(info).forEach(function (id) {
+            var n = info[id];
+            n.gen = n.labelGen;
+            if (n.gen == null) n.gen = estimateGen(n);
+            if (id !== rootId && n.gen != null && genValues.indexOf(n.gen) < 0) genValues.push(n.gen);
+        });
+        genValues.sort(function (a, b) { return a - b; }); // 最小 = 最高辈
+        var genRing = {};
+        genValues.forEach(function (g, i) { genRing[g] = i + 1; });
+        var unknownRing = genValues.length + 1;
+        var unknownIds = [];
+
+        Object.keys(info).forEach(function (id) {
+            var n = info[id];
+            if (id === rootId) {
+                n.gen = 0;
+                n.depth = 0;
+            } else if (n.gen == null) {
+                n.depth = unknownRing;
+                n.unreach = true;
+                unknownIds.push(id);
+            } else {
+                n.depth = genRing[n.gen];
+                n.unreach = bfs[id] === undefined;
+            }
+        });
+        var unreachIds = Object.keys(info).filter(function (id) { return info[id].unreach; });
+
+        // 摆位用的父节点：同地址时仍优先挂同址长辈；非同址时默认挂到直系亲属
+        // （父母/祖父母/子女/孙子女）分支下。只改角度树，不写回关系数据。
+        // 按辈分从高到低确定父节点，保证不会成环。
+        var placed = {};
+        placed[rootId] = true;
+        var orderIds = Object.keys(bfs).filter(function (id) { return id !== rootId; });
+        orderIds.sort(function (a, b) {
+            var ga = info[a].gen == null ? 99 : info[a].gen;
+            var gb = info[b].gen == null ? 99 : info[b].gen;
+            return ga - gb || bfs[a] - bfs[b] || info[a].order - info[b].order;
+        });
+        var parentScore = {};
+        // 「我」的直系邻居（父母/配偶/子女/兄弟姐妹）仍直接挂在圆心，
+        // 保证父母在上、配偶在右、子女在下、兄弟姐妹在左的朝向不变。
+        Object.keys(bfs).forEach(function (id) {
+            if (id !== rootId && bfs[id] === 1) {
+                parentScore[id] = rootId;
+                placed[id] = true;
+            }
+        });
+        orderIds.forEach(function (id) {
+            if (placed[id]) return; // 已在上面固定在圆心
+            var self = info[id];
+            var best = null;
+            (adj[id] || []).forEach(function (entry) {
+                var nb = entry.id;
+                if (!placed[nb] && nb !== rootId) return; // 父节点必须先确定，避免成环
+                var n = info[nb];
+                var lineal = !!(linealPair[pairKey(id, nb)] || linealPair[pairKey(nb, id)]);
+                var elder = n.gen != null && self.gen != null && n.gen < self.gen;
+                var samePlaceElder = n.placeId != null && n.placeId === self.placeId && elder;
+                // 非同址时默认挂靠直系亲属，不限制长辈/晚辈（布局需要）
+                var score = samePlaceElder ? 0 : (lineal ? 1 : 2);
+                var cand = {
+                    id: nb, score: score,
+                    gen: n.gen == null ? 99 : n.gen,
+                    bfs: bfs[nb] == null ? 99 : bfs[nb],
+                    order: n.order
+                };
+                if (!best || cand.score < best.score ||
+                    (cand.score === best.score && (cand.gen < best.gen ||
+                        (cand.gen === best.gen && cand.bfs < best.bfs)))) best = cand;
+            });
+            parentScore[id] = best ? best.id : rootId;
+            placed[id] = true;
+        });
+        treeChildren = {};
+        Object.keys(parentScore).forEach(function (id) {
+            treeParent[id] = parentScore[id];
+            (treeChildren[parentScore[id]] = treeChildren[parentScore[id]] || []).push(id);
+        });
+
+        /* ---------- 4. 角度：按家族分支分扇区，再按圈内宽度推开 ---------- */
+        var weight = {};
+        function calcWeight(id) {
+            if (weight[id] !== undefined) return weight[id];
+            var total = 1;
+            (treeChildren[id] || []).forEach(function (cid) { total += calcWeight(cid); });
+            weight[id] = total;
+            return total;
+        }
+        calcWeight(rootId);
+
+        // 第 1 圈按「直系分类」定向：父母在上、配偶在右、子女在下、兄弟姐妹在左。
+        // 每一组围绕自己的方向均匀铺开，组内人越多扇区越大；其余直系关系
+        // （例如直接登记成「堂兄弟」的人）填进剩下的空档，没空档就绕整圈均分。
+        var ROOT_DIR = {
+            parent: Math.PI * 1.5,
+            spouse: 0,
+            child: Math.PI * 0.5,
+            sibling: Math.PI
+        };
+        var ROOT_MIN_STEP = 0.62; // 第 1 圈相邻两人的最小角度，约 36°
+
+        function subtreeSpan(id) {
+            return Math.max(0.5, Math.min(1.7, (weight[id] - 1) * 0.42 + 0.5));
+        }
+
+        // 把某个分支的后代铺在它自己的角度附近，子女人数/子树越大分到的角度越宽
+        function assignDescendants(id, center, span) {
+            var kids = treeChildren[id] || [];
+            if (!kids.length) return;
+            var total = 0;
+            kids.forEach(function (k) { total += weight[k]; });
+            var cursor = center - span / 2;
+            kids.forEach(function (k) {
+                var share = total ? span * (weight[k] / total) : 0;
+                info[k].angle = cursor + share / 2;
+                info[k].angled = true;
+                assignDescendants(k, info[k].angle, Math.max(0.45, share * 0.92));
+                cursor += share;
+            });
+        }
+
+        function freeArcs(blocked) {
+            var list = [];
+            blocked.forEach(function (o) {
+                var s = o.center - o.half;
+                var e = o.center + o.half;
+                while (s < 0) { s += R_TAU; e += R_TAU; }
+                s = s % R_TAU;
+                e = e % R_TAU;
+                if (e < s) {
+                    list.push([s, R_TAU]);
+                    list.push([0, e]);
+                } else {
+                    list.push([s, e]);
+                }
+            });
+            list.sort(function (a, b) { return a[0] - b[0]; });
+            var out = [];
+            var cursor = 0;
+            list.forEach(function (b) {
+                if (b[0] > cursor + 1e-6) out.push([cursor, b[0]]);
+                if (b[1] > cursor) cursor = b[1];
+            });
+            if (cursor < R_TAU - 1e-6) out.push([cursor, R_TAU]);
+            return out;
+        }
+
+        function angleInFreeArcs(arcs, pos) {
+            for (var i = 0; i < arcs.length; i++) {
+                var len = arcs[i][1] - arcs[i][0];
+                if (pos <= len || i === arcs.length - 1) return arcs[i][0] + Math.min(pos, len);
+                pos -= len;
+            }
+            return R_START;
+        }
+
+        function assignRootAngles() {
+            var kids = treeChildren[rootId] || [];
+            if (!kids.length) return;
+            var groups = { parent: [], spouse: [], child: [], sibling: [], other: [] };
+            kids.forEach(function (id) {
+                var kind = rootKind[id] || 'other';
+                (groups[kind] || groups.other).push(id);
+            });
+
+            var occupied = [];
+            ['parent', 'spouse', 'child', 'sibling'].forEach(function (kind) {
+                var list = groups[kind];
+                if (!list.length) return;
+                var center = ROOT_DIR[kind];
+                var spread = list.length <= 1 ? 0 : Math.min(Math.PI * 0.8, list.length * ROOT_MIN_STEP);
+                list.forEach(function (id, i) {
+                    info[id].angle = spread
+                        ? center - spread / 2 + spread * ((i + 0.5) / list.length)
+                        : center;
+                    info[id].angled = true;
+                    assignDescendants(id, info[id].angle, subtreeSpan(id));
+                });
+                occupied.push({ center: center, half: spread / 2 + 0.1 });
+            });
+
+            if (groups.other.length) {
+                var arcs = occupied.length ? freeArcs(occupied) : [[0, R_TAU]];
+                var totalFree = 0;
+                arcs.forEach(function (a) { totalFree += a[1] - a[0]; });
+                groups.other.forEach(function (id, i) {
+                    var angle = totalFree > 1e-6
+                        ? angleInFreeArcs(arcs, totalFree * ((i + 0.5) / groups.other.length))
+                        : R_START + R_TAU * (i / groups.other.length);
+                    info[id].angle = angle;
+                    info[id].angled = true;
+                    assignDescendants(id, angle, subtreeSpan(id));
+                });
+            }
+        }
+
+        assignRootAngles();
+
+        var ringMap = {};
+        Object.keys(info).forEach(function (id) {
+            var d = info[id].depth;
+            (ringMap[d] = ringMap[d] || []).push(id);
+        });
+        var depths = Object.keys(ringMap).map(Number).sort(function (a, b) { return a - b; });
+        var radius = {};
+        var prevR = 0;
+
+        depths.forEach(function (d) {
+            var ids = ringMap[d];
+            var sumW = 0;
+            ids.forEach(function (id) { sumW += info[id].titleW + R_NODE_GAP; });
+            var need = (sumW * 1.08) / R_TAU;
+            var r;
+            if (d === 0) {
+                r = 0;
+            } else if (prevR <= 0) {
+                r = Math.max(R_FIRST_RING, need);
+            } else {
+                r = Math.max(prevR + (unknownIds.length && d === unknownRing ? R_RING_GAP + 26 : R_RING_GAP), need);
+            }
+            radius[d] = r;
+            if (d > 0) prevR = r;
+        });
+
+        // 没有角度的人（未连通 / 辈分未知）：在各圈内均匀铺开，不占家族分支的角度
+        var noAngleIds = Object.keys(info).filter(function (id) {
+            return id !== rootId && !info[id].angled;
+        });
+        if (noAngleIds.length) {
+            var byRing = {};
+            noAngleIds.forEach(function (id) {
+                (byRing[info[id].depth] = byRing[info[id].depth] || []).push(id);
+            });
+            Object.keys(byRing).forEach(function (d) {
+                var list = byRing[d];
+                list.forEach(function (id, i) {
+                    info[id].angle = R_START + (i / Math.max(1, list.length)) * R_TAU;
+                });
+            });
+        }
+
+        // 同一圈内按角序排好，再把间距不足的相邻名框推开。
+        // 不能成对互推——那样会互相穿过、顺序打乱（12 个哥哥时曾叠框）。
+        // 做法：从当前最大的空档处剪开圆环，沿角序只向后扩，再把整段平移回原来的中心。
+        function packRing(ids, r) {
+            if (!ids.length || r <= 0) return;
+            ids.forEach(function (id) { info[id].angle = normAngle(info[id].angle); });
+            ids.sort(function (a, b) { return info[a].angle - info[b].angle; });
+            if (ids.length < 2) return;
+            var n = ids.length;
+            var cut = 0;
+            var maxGap = -1;
+            for (var i = 0; i < n; i++) {
+                var a0 = info[ids[i]].angle;
+                var b0 = info[ids[(i + 1) % n]].angle;
+                var g0 = b0 - a0;
+                if (i === n - 1) g0 += R_TAU;
+                if (g0 < 0) g0 += R_TAU;
+                if (g0 > maxGap) {
+                    maxGap = g0;
+                    cut = i;
+                }
+            }
+            var seq = ids.slice(cut + 1).concat(ids.slice(0, cut + 1));
+            var angles = [];
+            seq.forEach(function (id) { angles.push(normAngle(info[id].angle)); });
+            for (var ui = 1; ui < n; ui++) {
+                while (angles[ui] < angles[ui - 1]) angles[ui] += R_TAU;
+            }
+            var oldCenter = (angles[0] + angles[n - 1]) / 2;
+            for (var pi = 1; pi < n; pi++) {
+                var prev = info[seq[pi - 1]];
+                var cur = info[seq[pi]];
+                var req = ((prev.titleW + cur.titleW) / 2 + R_NODE_GAP) / r;
+                angles[pi] = Math.max(angles[pi], angles[pi - 1] + req);
+            }
+            var shift = oldCenter - (angles[0] + angles[n - 1]) / 2;
+            seq.forEach(function (id, idx) {
+                info[id].angle = normAngle(angles[idx] + shift);
+            });
+        }
+
+        depths.forEach(function (d) {
+            if (d > 0) packRing(ringMap[d], radius[d]);
+        });
+
+        // 外圈整体旋转，尽量让子女/配偶正对内侧的家人（第 1 圈保持从正上方开始的固定朝向）
+        function rotateRing(ids, d) {
+            if (!ids.length || d <= 1) return;
+            var bestOff = 0;
+            var bestScore = Infinity;
+            for (var step = 0; step < 72; step++) {
+                var off = -Math.PI + step * (R_TAU / 72);
+                var score = 0;
+                ids.forEach(function (id) {
+                    var a = info[id];
+                    (adj[id] || []).forEach(function (nb) {
+                        var b = info[nb.id];
+                        if (!b || b.depth == null || b.depth >= d) return;
+                        var w = nb.kind === 'spouse' ? 2.2 : (nb.kind === 'parent' ? 1.4 : 0.7);
+                        score += (1 - Math.cos(a.angle + off - b.angle)) * w;
+                    });
+                });
+                if (score < bestScore - 1e-9) {
+                    bestScore = score;
+                    bestOff = off;
+                }
+            }
+            ids.forEach(function (id) { info[id].angle += bestOff; });
+        }
+        depths.forEach(function (d) {
+            if (d > 0) rotateRing(ringMap[d], d);
+        });
+
+        /* ---------- 5. 落坐标：方形画布，中心固定为「我」 ---------- */
+        var maxR = 0;
+        depths.forEach(function (d) { if (radius[d] > maxR) maxR = radius[d]; });
+        var half = maxR + R_CANVAS_PAD;
+        Object.keys(info).forEach(function (id) {
+            var n = info[id];
+            var halfW = Math.max(n.w, n.titleW) / 2;
+            half = Math.max(half, radius[n.depth] + halfW + 34, n.h / 2 + 54);
+        });
+        var size = Math.max(400, Math.ceil(half * 2));
+        var width = size;
+        var height = size;
+        var cx = width / 2;
+        var cy = height / 2;
+
+        Object.keys(info).forEach(function (id) {
+            var n = info[id];
+            n.angle = normAngle(n.angle);
+            n.r = radius[n.depth] || 0;
+            n.x = cx + Math.cos(n.angle) * n.r;
+            n.y = cy + Math.sin(n.angle) * n.r;
+        });
+
+        var rings = [];
+        depths.forEach(function (d) {
+            if (d === 0) return;
+            var isUnknown = d === unknownRing;
+            rings.push({
+                depth: d,
+                r: radius[d],
+                unreach: isUnknown,
+                gen: genValues[d - 1] != null ? genValues[d - 1] : null,
+                label: isUnknown ? '未连通' : (chineseNum(d) + '世')
+            });
+        });
+
+        /* ---------- 6. 连线：同圈关系走外弧，父母子女走径向直连 ---------- */
+        var edges = [];
+
+        function addEdge(aId, bId, kind, types, ris) {
+            var a = info[aId];
+            var b = info[bId];
+            if (!a || !b || aId === bId) return;
+            var text = types && types.length ? sortTypes(types).join('·') : '';
+            var sameRing = a.depth === b.depth;
+            var curved = sameRing && kind !== 'descent';
+            var d;
+            var ctrl = null;
+            if (curved) {
+                var dx = b.x - a.x;
+                var dy = b.y - a.y;
+                var len = Math.sqrt(dx * dx + dy * dy) || 1;
+                var mx = (a.x + b.x) / 2;
+                var my = (a.y + b.y) / 2;
+                var nx = -dy / len;
+                var ny = dx / len;
+                if ((mx - cx) * nx + (my - cy) * ny < 0) { nx = -nx; ny = -ny; }
+                var bend = Math.min(90, Math.max(26, len * 0.18));
+                ctrl = { x: mx + nx * bend, y: my + ny * bend };
+                d = 'M' + r1v(a.x) + ' ' + r1v(a.y) + 'Q' + r1v(ctrl.x) + ' ' + r1v(ctrl.y) +
+                    ' ' + r1v(b.x) + ' ' + r1v(b.y);
+            } else {
+                d = 'M' + r1v(a.x) + ' ' + r1v(a.y) + 'L' + r1v(b.x) + ' ' + r1v(b.y);
+            }
+            edges.push({
+                kind: kind,
+                ris: (ris || []).slice(),
+                title: text || '关系',
+                text: text,
+                d: d,
+                x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+                ctrl: ctrl,
+                curved: curved,
+                priority: kind === 'descent' ? 0 : (kind === 'spouse' ? 1 : 2)
+            });
+        }
+
+        norm.parents.forEach(function (l) {
+            addEdge(l.parentId, l.childId, 'descent',
+                l.displayTypes && l.displayTypes.length ? l.displayTypes : l.parentTypes, l.ris);
+        });
+        norm.spouses.forEach(function (l) {
+            addEdge(l.a, l.b, 'spouse', l.types, l.ris);
+        });
+        norm.siblings.forEach(function (l) {
+            addEdge(l.a, l.b, 'sibling', l.types, l.ris);
+        });
+        norm.kin.forEach(function (l) {
+            addEdge(l.a, l.b, 'kin', l.types, l.ris);
+        });
+
+        /* ---------- 7. 关系字：只放在完全无遮挡的位置，宁缺勿叠 ---------- */
+        var obstacles = [];
+        Object.keys(info).forEach(function (id) {
+            var n = info[id];
+            obstacles.push({ x: n.x - n.w / 2 - 4, y: n.y - n.h / 2 - 4, w: n.w + 8, h: n.h + 8 });
+            if (n.titleText) {
+                var tw = textWidth(n.titleText, 10) + 8;
+                obstacles.push({ x: n.x - tw / 2, y: n.y + n.h / 2 + 2, w: tw, h: 14 });
+            }
+        });
+
+        function edgeCandidates(e) {
+            var out = [];
+            var ts = [0.5, 0.38, 0.62, 0.3, 0.7, 0.46, 0.54];
+            var dx = e.x2 - e.x1;
+            var dy = e.y2 - e.y1;
+            var len = Math.sqrt(dx * dx + dy * dy) || 1;
+            var nx = -dy / len;
+            var ny = dx / len;
+            ts.forEach(function (t) {
+                var x, y;
+                if (e.ctrl) {
+                    var mt = 1 - t;
+                    x = mt * mt * e.x1 + 2 * mt * t * e.ctrl.x + t * t * e.x2;
+                    y = mt * mt * e.y1 + 2 * mt * t * e.ctrl.y + t * t * e.y2;
+                } else {
+                    x = e.x1 + dx * t;
+                    y = e.y1 + dy * t;
+                }
+                [0, 14, -14, 24, -24].forEach(function (off) {
+                    out.push({ x: x + nx * off, y: y + ny * off, anchor: 'middle' });
+                });
+            });
+            return out;
+        }
+
+        var placed = [];
+        var labelsOut = [];
+        var pending = edges.filter(function (e) { return !!e.text; })
+            .sort(function (a, b) {
+                if (a.priority !== b.priority) return a.priority - b.priority;
+                return textWidth(b.text, LABEL_SIZE) - textWidth(a.text, LABEL_SIZE);
+            });
+
+        pending.forEach(function (e) {
+            var candidates = edgeCandidates(e);
+            for (var i = 0; i < candidates.length; i++) {
+                var c = candidates[i];
+                var box = labelBox(c, e.text);
+                if (box.x < 2 || box.x + box.w > width - 2) continue;
+                if (box.y < 2 || box.y + box.h > height - 2) continue;
+                if (overlapScore(box, obstacles) > 0) continue;
+                if (overlapScore(box, placed) > 0) continue;
+                placed.push(box);
+                labelsOut.push({
+                    text: e.text,
+                    ris: e.ris.slice(),
+                    x: c.x,
+                    y: c.y,
+                    anchor: c.anchor,
+                    dim: e.priority > 1,
+                    box: box
+                });
+                break;
+            }
+        });
+
+        var nodes = Object.keys(info).map(function (id) {
+            var n = info[id];
+            return {
+                id: n.id,
+                name: n.name,
+                nameText: n.nameText,
+                title: n.title,
+                titleText: n.titleText,
+                alias: n.alias,
+                gen: n.gen,
+                gender: n.gender,
+                placeId: n.placeId,
+                rank: n.rank,
+                isRoot: n.isRoot,
+                gen: n.gen,
+                unreach: n.unreach,
+                order: n.order,
+                w: n.w,
+                h: n.h,
+                boxH: n.h,
+                depth: n.depth,
+                angle: n.angle,
+                r: n.r,
+                x: n.x,
+                y: n.y
+            };
+        }).sort(function (a, b) {
+            return a.depth - b.depth || a.angle - b.angle || a.order - b.order;
+        });
+
+        return {
+            width: width,
+            height: height,
+            center: { x: cx, y: cy },
+            rings: rings,
+            nodes: nodes,
+            edges: edges,
+            labels: labelsOut,
+            maxDepth: depths.length ? depths[depths.length - 1] : 0,
+            boxH: R_NODE_H
+        };
+    }
+
+    function r1v(v) { return Math.round(v * 10) / 10; }
+
+    var CN_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+    function chineseNum(n) {
+        if (n < 11) return CN_NUM[n] || String(n);
+        if (n < 20) return '十' + CN_NUM[n - 10];
+        var t = Math.floor(n / 10);
+        var o = n % 10;
+        return (t < 11 ? CN_NUM[t] : String(t)) + '十' + (o ? CN_NUM[o] : '');
+    }
+
+    function clampNum(v, lo, hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    // 自适应缩放：把 content 完整放进 view，并在 view 里居中。
+    function fitTransform(contentW, contentH, viewW, viewH, pad, minScale, maxScale) {
+        contentW = contentW || 0;
+        contentH = contentH || 0;
+        viewW = viewW || 0;
+        viewH = viewH || 0;
+        pad = pad == null ? 32 : pad;
+        minScale = minScale == null ? 0.1 : minScale;
+        maxScale = maxScale == null ? 4 : maxScale;
+        if (contentW <= 0 || contentH <= 0 || viewW <= 0 || viewH <= 0) {
+            return { scale: 1, tx: 0, ty: 0 };
+        }
+        var s = Math.min((viewW - pad * 2) / contentW, (viewH - pad * 2) / contentH);
+        s = clampNum(s, minScale, maxScale);
+        return {
+            scale: s,
+            tx: (viewW - contentW * s) / 2,
+            ty: (viewH - contentH * s) / 2
+        };
+    }
+
+    // 以视口内 (px, py) 为锚点缩放：锚点下的图形坐标保持不动。
+    function zoomTransform(view, px, py, factor, minScale, maxScale) {
+        view = view || {};
+        var s0 = view.scale > 0 ? view.scale : 1;
+        var tx0 = view.tx || 0;
+        var ty0 = view.ty || 0;
+        minScale = minScale == null ? 0.1 : minScale;
+        maxScale = maxScale == null ? 4 : maxScale;
+        var s1 = clampNum(s0 * (factor || 1), minScale, maxScale);
+        var ratio = s1 / s0;
+        return {
+            scale: s1,
+            tx: px - (px - tx0) * ratio,
+            ty: py - (py - ty0) * ratio
+        };
+    }
+
     /* ---------- 关系字候选位置 ---------- */
 
     function descentCandidates(x, yTop, yBottom) {
@@ -1009,6 +1802,9 @@ var GraphLayout = (function () {
 
     return {
         layout: layout,
+        radial: radial,
+        fitTransform: fitTransform,
+        zoomTransform: zoomTransform,
         textWidth: textWidth,
         fitText: fitText,
         BOX_H: BOX_H,

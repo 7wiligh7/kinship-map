@@ -101,8 +101,8 @@ ok(d.exact === true && d.external === true, '伯父也经过关系库换算，�
 eq(d.key, '伯父', '本地正名继续作为下一跳的 key');
 
 var e = labelOf(['父亲', '父亲', '父亲']);
-eq(e.label, '爷爷', '本项目「曾祖辈降为爷爷」的显示规范保持不变');
-ok(e.external === true, '曾祖称谓仍走关系库换算后归一到爷爷');
+eq(e.label, '曾祖父', '曾祖辈按标准称谓显示为曾祖父');
+ok(e.external === true, '曾祖称谓仍走关系库换算');
 
 var f = labelOf(['儿子', '儿子', '儿子']);
 eq(f.label, '曾孙', '已有正名「曾孙」保持不变');

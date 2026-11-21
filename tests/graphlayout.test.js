@@ -463,27 +463,9 @@ Object.keys(scrYs).forEach(function (y) {
 });
 ok(maxSpan <= 800, '每行节点跨度不超过面板宽度（实际 ' + maxSpan.toFixed(0) + '）');
 
-// 称谓定世兜底：关系边把"大婆"连错成平辈，也要靠称谓把她放回祖辈一世
-var dpP = [person('dme', '我', 'm'), person('dfa', '父亲', 'm'), person('ddp', '大婆', 'f')];
-dpP[2].titles = ['大婆'];
-var dpR = [rel('dfa', 'dme', '父亲'), rel('ddp', 'dme', '表亲')];
-var dpK = Kinship.compute('dme', dpP, dpR);
-var dpG = GraphLayout.layout({ persons: dpP, relations: dpR, labels: dpK.labels, rootId: 'dme' });
-ok(rowOf(dpG, 'ddp').label === '一世',
-    '称谓定世：titles 写「大婆」的人应被放回一世（实际 ' + rowOf(dpG, 'ddp').label + '）');
-ok(rowOf(dpG, 'dfa').label === '二世', '父亲仍在二世');
-
-// 曾祖辈称谓也归一世：关系链把"曾祖父"算成 -3（曾祖辈），兜底拉回 -2 与大婆同在一世
-var zpP = [person('zme', '我', 'm'), person('zgf', '爷爷', 'm'), person('zz1', '14公', 'm')];
-var zpR = [rel('zgf', 'zme', '爷爷'), rel('zz1', 'zgf', '父亲')];
-var zpK = Kinship.compute('zme', zpP, zpR);
-var zpG = GraphLayout.layout({ persons: zpP, relations: zpR, labels: zpK.labels, rootId: 'zme' });
-ok(rowOf(zpG, 'zz1').label === '一世',
-    '称谓定世：称谓「曾祖父」应归一世、与大婆同辈（实际 ' + rowOf(zpG, 'zz1').label + '）');
-
 // 名字关键字定世：称谓是 name 原值（15公/三叔）算不出代数时，用关键字定世
-var ngP = [person('nme', '我', 'm'), person('ng1', '15公', 'm'), person('ng2', '三叔', 'm'), person('ng3', '大婆', 'f')];
-var ngR = [rel('ng1', 'nme', '15公'), rel('ng2', 'nme', '三叔'), rel('ng3', 'nme', '大婆')];
+var ngP = [person('nme', '我', 'm'), person('ng1', '15公', 'm'), person('ng2', '三叔', 'm'), person('ng3', '外婆', 'f')];
+var ngR = [rel('ng1', 'nme', '15公'), rel('ng2', 'nme', '三叔'), rel('ng3', 'nme', '外婆')];
 var ngK = Kinship.compute('nme', ngP, ngR);
 var ngG = GraphLayout.layout({ persons: ngP, relations: ngR, labels: ngK.labels, rootId: 'nme' });
 ok(rowOf(ngG, 'ng1').label === '一世', '名字含「公」定世为一世（实际 ' + rowOf(ngG, 'ng1').label + '）');
