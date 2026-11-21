@@ -498,32 +498,6 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .pp-del:hover { color: #f44336; }
 
-/* 地点卡人物行：＋ = 把这个称谓设为「我」 */
-.pp-me {
-    border: 1px solid #cfe3cf;
-    background: #f3faf3;
-    color: #2e7d32;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    font-size: 14px;
-    line-height: 1;
-    padding: 0;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.15s, color 0.15s;
-}
-
-.pp-me:hover { background: #e3f2e3; }
-
-.pp-me.on {
-    background: #2e7d32;
-    border-color: #2e7d32;
-    color: #fff;
-}
-
-.pp-me.on:hover { background: #276b2b; }
-
 /* 标记上的地点名 + 人数角标 */
 .bl-count {
     font-style: normal;
@@ -554,11 +528,11 @@ button:focus-visible, [role="button"]:focus-visible {
 .kin-path { font-size: 12px; color: #999; }
 
 /* 地点编辑器里的称谓条目表（一个条目 = 一个称谓）：
-   同一行 ＋ | 称谓名 | 性别 | 年龄 | ×，
+   同一行 称谓名 | 性别 | 年龄 | ×，
    下一行可展开推算称谓与互称 */
 .place-title-row {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) 58px 46px 24px;
+    grid-template-columns: minmax(0, 1fr) 58px 46px 24px;
     gap: 4px;
     align-items: center;
     margin-bottom: 6px;
@@ -585,31 +559,6 @@ button:focus-visible, [role="button"]:focus-visible {
 .pt-kin-wrap { grid-column: 1 / -1; }
 .pt-kin-wrap summary { font-size: 12px; color: #2b6cb0; cursor: pointer; user-select: none; }
 .pt-kin { margin-top: 4px; margin-bottom: 0; font-size: 12px; }
-
-/* 称谓条目左侧的 ＋：把这行设为「我」（选中后填充绿色） */
-.pt-me {
-    width: 24px;
-    height: 24px;
-    border: 1px solid #cfe3cf;
-    background: #f3faf3;
-    color: #2e7d32;
-    border-radius: 50%;
-    font-size: 16px;
-    line-height: 1;
-    padding: 0;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-}
-
-.pt-me:hover { background: #e3f2e3; }
-
-.pt-me.on {
-    background: #2e7d32;
-    border-color: #2e7d32;
-    color: #fff;
-}
-
-.pt-me.on:hover { background: #276b2b; }
 
 .entry-summary {
     font-size: 14px;
@@ -854,34 +803,6 @@ button:focus-visible, [role="button"]:focus-visible {
 }
 
 .graph-title { font-size: 16px; font-weight: bold; }
-
-.graph-root-pick {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    color: #a0c4ff;
-    flex: 1;
-    min-width: 0;
-}
-
-.graph-root-tag { flex: none; }
-
-.graph-root-pick select {
-    background: #0f3460;
-    color: #e0e6f5;
-    border: 1px solid #2a4a7f;
-    border-radius: 6px;
-    padding: 4px 8px;
-    font-size: 13px;
-    max-width: 260px;
-    min-width: 120px;
-    cursor: pointer;
-}
-
-.graph-root-pick select:disabled { opacity: .6; cursor: default; }
-
-.graph-root-pick select:focus { outline: 2px solid #4a7fd4; outline-offset: 1px; }
 
 /* 图表头「补齐关系网」按钮：按称谓反推关系边，只新增不改动已有关系 */
 .graph-fill {

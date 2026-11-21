@@ -7,8 +7,8 @@
 //   places[] : { id, name, note, lat, lng, regionId }
 //   persons[]: { id, name, gender, age, titles[], placeId }
 //   relations[]: { from, to, type }   —— from 是 to 的 type
-//   rootId   : 「我」对应的人物 id
 //
+// 「我」不单独存字段：称谓推算起点固定取 persons[] 里的第一个人。
 // 旧格式（v1.55 及以前）人物自带坐标，迁移规则：每个人物 → 一个同名地点，其下挂该人物。
 var Places = (function () {
     var SCHEMA_VERSION = 4;
@@ -100,25 +100,17 @@ var Places = (function () {
         };
         d.persons = d.persons || [];
         d.persons.push(p);
-        if (o.isRoot) d.rootId = p.id;
         return p;
     }
 
     function removePerson(d, id) {
         d.persons = (d.persons || []).filter(function (p) { return p.id !== id; });
         d.relations = (d.relations || []).filter(function (r) { return r.from !== id && r.to !== id; });
-        if (d.rootId === id) d.rootId = null;
     }
 
-    // 称谓推算的实际起点：显式 rootId 有效时优先用它（用户手动指定），
-    // 否则默认取第一个人。删除起点人物 / 旧数据没存 rootId 时都会自动回到第一人，
-    // 因此「我」永远有起点，不再要求用户先手动标记。
+    // 称谓推算的起点固定为第一个人；删掉第一个人后自动由下一个人接任。
     function effectiveRootId(d) {
         if (!d) return null;
-        if (d.rootId) {
-            var marked = findPerson(d, d.rootId);
-            if (marked) return marked.id;
-        }
         var persons = d.persons || [];
         return persons.length ? persons[0].id : null;
     }
@@ -199,8 +191,7 @@ var Places = (function () {
                         age: normAge(b.age), titles: b.titles || [], lat: b.lat, lng: b.lng
                     };
                 }),
-                relations: d.relations || [],
-                rootId: d.rootId || null
+                relations: d.relations || []
             };
         }
         if (!Array.isArray(d.persons)) return null;
@@ -310,7 +301,9 @@ var Places = (function () {
         }).map(function (r) {
             return { from: String(r.from), to: String(r.to), type: r.type };
         });
-        d.rootId = d.rootId && ids[String(d.rootId)] ? String(d.rootId) : null;
+        // 不再支持手动标记「我」：旧数据里可能残留的 rootId 一律丢弃，
+        // 称谓起点固定取 persons[0]。
+        delete d.rootId;
 
         d.version = SCHEMA_VERSION;
         if (migrated.people) d.migratedFrom = migrated; // 给界面提示用（旧数据 → 新模型）

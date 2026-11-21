@@ -230,6 +230,65 @@
     '亲家母': { alias: ['亲家'] }
   };
 
+  /* ===== relationship.js 词表 → 本项目正名 =====
+   * relationship.js 偏口语、带排行（爸爸、叔叔、大姑、大舅、堂哥/堂弟…），
+   * 本项目用族谱正名（父亲、叔父、姑姑、舅舅、堂兄弟…）。这里把两套词对齐，
+   * 保证「换算交给 relationship.js」之后，界面仍然是本项目一贯的叫法。
+   * 词表里没有的词（连襟、姻侄、兄弟眷父…）原样保留，相当于自动扩充词表。 */
+  var CANON_EXTRA = {
+    /* 配偶 / 排行口语 */
+    '老公': '配偶', '老婆': '配偶', '丈夫': '配偶', '妻子': '配偶',
+    '大伯': '伯父', '小伯': '伯父',
+    '小叔': '叔父', '大叔': '叔父',
+    '大姑': '姑姑', '小姑': '姑姑', '二姑': '姑姑', '三姑': '姑姑', '四姑': '姑姑', '五姑': '姑姑',
+    '大舅': '舅舅', '小舅': '舅舅', '二舅': '舅舅', '三舅': '舅舅', '四舅': '舅舅', '五舅': '舅舅',
+    '大姨': '姨妈', '小姨': '姨妈', '二姨': '姨妈', '三姨': '姨妈', '四姨': '姨妈', '五姨': '姨妈',
+    '大婶': '婶婶', '小婶': '婶婶',
+    '大姑丈': '姑父', '小姑丈': '姑父', '二姑丈': '姑父', '三姑丈': '姑父', '四姑丈': '姑父', '五姑丈': '姑父',
+    '大姨丈': '姨父', '小姨丈': '姨父', '二姨丈': '姨父', '三姨丈': '姨父', '四姨丈': '姨父', '五姨丈': '姨父',
+    '大舅妈': '舅妈', '小舅妈': '舅妈', '二舅妈': '舅妈', '三舅妈': '舅妈',
+
+    /* 祖辈旁系的口语 */
+    '大舅爷': '舅祖父', '大舅公': '舅祖父',
+    '姑爷爷': '姑祖父', '姑奶奶': '姑祖母',
+
+    /* 表亲：姑表/舅表/姨表统一并到本项目的「表」字辈 */
+    '姑表哥': '表兄弟', '姑表弟': '表兄弟', '姑表兄': '表兄弟',
+    '舅表哥': '表兄弟', '舅表弟': '表兄弟', '舅表兄': '表兄弟',
+    '姨表哥': '表兄弟', '姨表弟': '表兄弟', '姨表兄': '表兄弟',
+    '姑表姐': '表姐妹', '姑表妹': '表姐妹',
+    '舅表姐': '表姐妹', '舅表妹': '表姐妹',
+    '姨表姐': '表姐妹', '姨表妹': '表姐妹',
+    '姑表伯父': '表伯', '舅表伯父': '表伯',
+    '姑表叔父': '表叔', '舅表叔父': '表叔',
+    '姑表姑母': '表姑', '舅表姑母': '表姑', '姨表姑母': '表姑',
+    '姑表舅父': '表舅', '姨表舅父': '表舅',
+    '姨姨母': '表姨',
+    '姑表侄男': '表侄', '舅表侄男': '表侄', '姨侄男': '表侄',
+    '姑表侄女': '表侄女', '舅表侄女': '表侄女', '姨侄女': '表侄女',
+
+    /* 姻亲口语 */
+    '夫侄': '侄子', '夫侄子': '侄子',
+    '妻侄': '内侄', '妻侄子': '内侄'
+  };
+
+  // 正名 + 俗称都指向正名；relationship.js 给的「爸爸/叔叔/堂哥」会先落到这里。
+  var CANON = {};
+  Object.keys(TERMS).forEach(function (canon) {
+    if (!CANON[canon]) CANON[canon] = canon;
+    (TERMS[canon].alias || []).forEach(function (alias) {
+      if (!CANON[alias]) CANON[alias] = canon;
+    });
+  });
+  Object.keys(CANON_EXTRA).forEach(function (word) {
+    CANON[word] = CANON_EXTRA[word];
+  });
+
+  function canonicalTitle(title) {
+    var s = String(title == null ? '' : title).trim();
+    return CANON[s] || s;
+  }
+
   /* ===================================================================
    * 核心规则表：键是「上级已定称谓 + ｜ + 这一步的关系词」，值是新的称谓。
    * 值可以是字符串，也可以是 function(新人物, 起点「我」) —— 用于需要看
@@ -275,6 +334,14 @@
     '儿子|女儿': function (n) { return gendered(n, '孙子', '孙女', '孙子/孙女'); },
     '女儿|儿子': function (n) { return gendered(n, '外孙', '外孙女', '外孙/外孙女'); },
     '女儿|女儿': function (n) { return gendered(n, '外孙', '外孙女', '外孙/外孙女'); },
+    // 「父亲的儿子」在本地先归成「兄弟/姐妹」，再往下走时要把具体称谓补回来，
+    // 否则 relationship.js 的「侄子/儿子」「外甥」这类候选里选不出家族叫法。
+    '兄弟|儿子': function (n) { return gendered(n, '侄子', '侄女', '侄子/侄女'); },
+    '兄弟|女儿': function (n) { return gendered(n, '侄子', '侄女', '侄子/侄女'); },
+    '姐妹|儿子': function (n) { return gendered(n, '外甥', '外甥女', '外甥/外甥女'); },
+    '姐妹|女儿': function (n) { return gendered(n, '外甥', '外甥女', '外甥/外甥女'); },
+    '兄弟|配偶': '嫂子/弟媳',
+    '姐妹|配偶': '姐夫/妹夫',
     '哥哥|儿子': function (n) { return gendered(n, '侄子', '侄女', '侄子/侄女'); },
     '哥哥|女儿': function (n) { return gendered(n, '侄子', '侄女', '侄子/侄女'); },
     '弟弟|儿子': function (n) { return gendered(n, '侄子', '侄女', '侄子/侄女'); },
@@ -656,9 +723,32 @@
     return null;
   }
 
+  // 反向互称时常走到「爷爷的儿子」这类链。因为父母已经在链里出现过，
+  // 这个儿子不可能是「我」的父亲，只能是伯父/叔父（母系则为舅舅/姨妈）。
+  // 只有「爷爷」是孤立的第一跳、链里没有父母时才不强制，保留关系库的候选。
+  function uncleFromGrandparent(path, curKey, word) {
+    if (!path || !curKey) return null;
+    if (path.indexOf('父亲') < 0 && path.indexOf('母亲') < 0) return null;
+    var paternal;
+    if (curKey === '爷爷' || curKey === '奶奶') paternal = true;
+    else if (curKey === '外公' || curKey === '外婆') paternal = false;
+    else return null;
+    if (word === '儿子') return paternal ? '伯父/叔父' : '舅舅';
+    if (word === '女儿') return paternal ? '姑姑' : '姨妈';
+    return null;
+  }
+
   function inverseWord(type, person) {
     if (!Object.prototype.hasOwnProperty.call(INV, type)) return null;
     return INV[type](person);
+  }
+
+  // 可选的外部称谓兜底（浏览器里由 kinship-external.js 注入 relationship.js）。
+  // 只在本项目规则推不出正名时调用，不替换已有正名。
+  var externalResolver = null;
+
+  function setExternalResolver(fn) {
+    externalResolver = typeof fn === 'function' ? fn : null;
   }
 
   // 本项目约定：关系链算出的曾祖辈（曾/高/天/烈/太/远/鼻祖）显示时统一降为爷爷辈，
@@ -682,6 +772,91 @@
     return label;
   }
 
+  // 规范化 + 本项目显示约定（曾祖辈降为爷爷/奶奶、名字含「爹」强制伯父）。
+  function normalizeLabel(label, person) {
+    var s = String(label == null ? '' : label).trim();
+    if (!s) return s;
+    // 本项目：名字就叫「大婆」的人，称谓按原值显示，不转成正名「奶奶」
+    var nm = person && person.name ? String(person.name).trim() : '';
+    if (nm === '大婆' || s === '大婆') return s;
+    if (s.indexOf('/') < 0) return normalizeElderTitle(canonicalTitle(s), person);
+    var out = [];
+    s.split('/').forEach(function (part) {
+      var t = normalizeElderTitle(canonicalTitle(part), person);
+      if (t && out.indexOf(t) < 0) out.push(t);
+    });
+    return out.join('/');
+  }
+
+  // relationship.js 对「父亲的儿子」会给「哥哥/弟弟」两个候选；本项目的叫法是
+  // 「兄弟」。成对出现时合并，避免界面上出现一长串候选。
+  function collapseKinTitles(list) {
+    var out = [];
+    var set = {};
+    list.forEach(function (t) {
+      if (!t || set[t]) return;
+      set[t] = true;
+      out.push(t);
+    });
+    function pair(a, b, group) {
+      if (!set[a] || !set[b]) return;
+      out = out.filter(function (t) { return t !== a && t !== b; });
+      delete set[a];
+      delete set[b];
+      if (!set[group]) {
+        set[group] = true;
+        out.push(group);
+      }
+    }
+    pair('哥哥', '弟弟', '兄弟');
+    pair('姐姐', '妹妹', '姐妹');
+    if (set['兄弟'] && set['姐妹']) {
+      out = out.filter(function (t) { return t !== '兄弟' && t !== '姐妹'; });
+      delete set['兄弟'];
+      delete set['姐妹'];
+      set['兄弟姐妹'] = true;
+      out.push('兄弟姐妹');
+    }
+    return out;
+  }
+
+  function aliasForLabel(label, person) {
+    var out = [];
+    String(label).split('/').forEach(function (part) {
+      aliasFor(part, person).forEach(function (a) {
+        if (a && a !== label && out.indexOf(a) < 0) out.push(a);
+      });
+    });
+    return out;
+  }
+
+  // 在 relationship.js 给出的候选集里选显示称谓：
+  // 本地规则算出的正名如果就在候选集里，优先用它（家族习惯/上下文更准）；
+  // 否则把候选并起来（如「堂伯/堂叔」），不擅自丢掉一种可能。
+  function pickTitle(candidates, localLabel, localExact) {
+    if (!candidates.length) return null;
+    if (localExact && localLabel && labelInCandidates(localLabel, candidates)) {
+      return localLabel;
+    }
+    return candidates.join('/');
+  }
+
+  function labelInCandidates(label, candidates) {
+    var parts = String(label == null ? '' : label).split('/');
+    for (var i = 0; i < parts.length; i++) {
+      if (candidates.indexOf(parts[i]) < 0) return false;
+    }
+    return parts.length > 0;
+  }
+
+  // relationship.js 对「父亲的儿子的儿子」会同时给「侄子/儿子」：它不知道中间
+  // 那个儿子不可能是「我」本人。显示上本地正名已经能定成侄子，这类过宽的
+  // 亲属词就不再放进别名，避免搜索「儿子」搜出侄子。
+  var VAGUE_EXT_ALIAS = {
+    '儿子': 1, '女儿': 1, '子女': 1, '父母': 1, '父亲': 1, '母亲': 1,
+    '配偶': 1, '丈夫': 1, '妻子': 1, '老公': 1, '老婆': 1
+  };
+
   function compute(rootId, persons, relations) {
     var labels = {};
     var viaRel = {};
@@ -693,8 +868,13 @@
     }
 
     var ego = pmap[rootId];
-    labels[rootId] = { label: '我', exact: true, path: [], gen: 0, key: '我', alias: [] };
+    labels[rootId] = { label: '我', exact: true, external: false, path: [], gen: 0, key: '我', alias: [] };
     var queue = [rootId];
+
+    // relationship.js 单次换算约几毫秒。大族谱超过预算后，已有正名的节点
+    // 不再逐条询问（本地正名本来就够用）；没有正名的节点仍然问，保证能算出来。
+    var extStart = Date.now ? Date.now() : new Date().getTime();
+    var extBudget = 300;
 
     while (queue.length) {
       var cid = queue.shift();
@@ -718,38 +898,100 @@
         }
         if (labels[nid]) return;
 
-        var basePath = cur.exact ? [cur.label] : cur.path;
-        var path = basePath.concat([word]);
+        // 原始关系链：不再拿上一步的称谓去压缩，relationship.js 需要完整的
+        // 「父亲的哥哥的儿子」才能给出准确换算。
+        var path = cur.path.concat([word]);
         var gen = cur.gen + d;
-        var exact, label;
 
+        // 本地规则只做三件事：直接关系、候选集里的家族叫法、relationship.js
+        // 不认识的词（如表亲）的兜底；不再是称谓的唯一来源。
+        var localExact, localLabel;
+        var uncle = firstHop ? null : uncleFromGrandparent(cur.path, cur.key, word);
         if (firstHop) {
-          exact = true;
-          label = word;
+          localExact = true;
+          localLabel = normalizeLabel(word, pmap[nid]);
+        } else if (uncle) {
+          localExact = true;
+          localLabel = normalizeLabel(uncle, pmap[nid]);
         } else if (cur.key) {
           var resolved = resolveRuleVariant(cur.key, word, pmap[nid], ego);
           if (resolved !== null) {
-            exact = true;
-            label = resolved;
+            localExact = true;
+            localLabel = normalizeLabel(resolved, pmap[nid]);
           } else {
-            exact = false;
-            label = path.join('的');
+            localExact = false;
+            localLabel = path.join('的');
           }
         } else {
-          exact = false;
-          label = path.join('的');
+          localExact = false;
+          localLabel = path.join('的');
         }
 
-        // 称谓显示规范化：曾祖辈降为爷爷/奶奶；名字含「爹」的男性强制伯父
-        label = normalizeElderTitle(label, pmap[nid]);
+        var label = localLabel;
+        var exact = localExact;
+        var external = false;
+        var extTitles = null;
+
+        // 直接关系是用户明确选的类型，不换算；多跳才交给 relationship.js。
+        var now = Date.now ? Date.now() : new Date().getTime();
+        var overBudget = now - extStart > extBudget;
+        if (!firstHop && externalResolver && (!localExact || !overBudget)) {
+          try {
+            extTitles = externalResolver(path, pmap[nid], ego, !localExact);
+          } catch (e) { extTitles = null; }
+
+          if (extTitles && extTitles.length) {
+            var candidates = [];
+            extTitles.forEach(function (t) {
+              var n = normalizeLabel(t, pmap[nid]);
+              if (n && candidates.indexOf(n) < 0) candidates.push(n);
+            });
+            candidates = collapseKinTitles(candidates);
+
+            // 本地正名不在候选集里：再带链式校验问一次，防止 relationship.js
+            // 把「孙子的堂兄弟」截断成「孙子」。
+            if (localExact && !labelInCandidates(localLabel, candidates)) {
+              var guarded = null;
+              try { guarded = externalResolver(path, pmap[nid], ego, true); } catch (e) { guarded = null; }
+              var guardedList = [];
+              (guarded || []).forEach(function (t) {
+                var n = normalizeLabel(t, pmap[nid]);
+                if (n && guardedList.indexOf(n) < 0) guardedList.push(n);
+              });
+              guardedList = collapseKinTitles(guardedList);
+              extTitles = guarded || [];
+              candidates = guardedList;
+            }
+
+            var picked = pickTitle(candidates, localLabel, localExact);
+            if (picked) {
+              label = picked;
+              exact = true;
+              external = true;
+            }
+          }
+        }
+
+        // 别名：候选集里没选中的叫法 + 本项目词表里的俗称。
+        var aliases = [];
+        if (external && extTitles && extTitles.length) {
+          extTitles.forEach(function (t) {
+            var n = normalizeLabel(t, pmap[nid]);
+            if (n && n !== label && label.split('/').indexOf(n) < 0 && !VAGUE_EXT_ALIAS[n] && aliases.indexOf(n) < 0) aliases.push(n);
+          });
+        }
+        aliasForLabel(label, pmap[nid]).forEach(function (a) {
+          if (a !== label && aliases.indexOf(a) < 0) aliases.push(a);
+        });
 
         labels[nid] = {
           label: label,
           exact: exact,
+          external: external,
           path: path,
           gen: gen,
-          key: exact ? label : null,
-          alias: exact ? aliasFor(label, pmap[nid]) : []
+          key: localExact ? localLabel : null,
+          alias: aliases
         };
         viaRel[nid] = ri;
         queue.push(nid);
@@ -796,7 +1038,7 @@
   function mutual(rootId, otherId, persons, relations) {
     if (!rootId || !otherId) return { iCall: null, theyCall: null, genDiff: null };
     if (rootId === otherId) {
-      var self = { label: '我', exact: true, path: [], gen: 0, key: '我', alias: [] };
+      var self = { label: '我', exact: true, external: false, path: [], gen: 0, key: '我', alias: [] };
       return { iCall: self, theyCall: self, genDiff: 0 };
     }
     var fwd = compute(rootId, persons, relations);
@@ -1056,6 +1298,8 @@
     typeGroup: typeGroup,
     delta: delta,
     compute: compute,
+    setExternalResolver: setExternalResolver,
+    canonicalTitle: canonicalTitle,
     computePathEdges: computePathEdges,
     displayTitle: displayTitle,
     mutual: mutual,

@@ -444,6 +444,12 @@ eq(GEN(rev3, 'me'), -2, '反着录入「我是孙子的爷爷」：爷爷 gen -2
 
 eq(K.rankOf('23公'), 23, '阿拉伯数字排行');
 eq(K.rankOf('大婆'), 0, '「大婆」= 奶奶辈最大，排行 0（排同辈最前）');
+// 大婆称谓按原值显示，不转成正名「奶奶」
+var dapoP = [{ id: 'dme', name: '我', gender: 'm' }, { id: 'ddp', name: '大婆', gender: 'f' }];
+var dapoR = [{ from: 'ddp', to: 'dme', type: '大婆' }];
+var dapoK = K.compute('dme', dapoP, dapoR);
+eq(dapoK.labels.ddp.label, '大婆', '大婆称谓按原值显示（不转成奶奶）');
+eq(K.displayTitle(dapoP[1], dapoK), '大婆', '信息卡也显示大婆原值');
 eq(K.rankOf('大爷爷'), 0, '「大X」前缀一律当排行 0');
 eq(K.titleDelta('大婆'), -2, '称谓定世：大婆是祖辈上两代');
 eq(K.titleDelta('曾外祖父'), -2, '曾祖辈称谓按爷爷辈归一世');

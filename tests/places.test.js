@@ -24,7 +24,7 @@ ok(d.persons.length === 3, '迁移后人物数不变');
 ok(d.persons.every(function (p) { return p.lat === null && p.lng === null; }), '迁移后人物不再自带坐标');
 ok(d.persons.every(function (p) { return !!p.placeId; }), '迁移后人物都挂到地点下');
 ok(d.relations.length === 1 && d.relations[0].type === '父亲', '迁移后关系保留');
-ok(d.rootId === 'p3', '迁移后「我」保留');
+ok(d.rootId === undefined, '旧数据里的 rootId 不再保留（起点固定第一人）');
 var pl1 = Places.findPlace(d, d.persons[0].placeId);
 ok(pl1 && pl1.name === '爷爷' && pl1.lat === 31.0016, '迁移后地点名/坐标来自原人物');
 ok(pl1 && pl1.regionId === 'r1', '迁移后地点继承区域归属');
@@ -91,29 +91,25 @@ Places.removePerson(d5, 'b');
 ok(d5.places.length === 1, '删人物后地点还在');
 ok(d5.persons.length === 1, '人物已删');
 ok(d5.relations.length === 0, '人物相关关系已删');
-ok(d5.rootId === 'a', '「我」不受影响');
+ok(Places.effectiveRootId(d5) === 'a', '删除其他人后起点仍是第一人');
 
-/* ---------- 6. 标记为「我」 ---------- */
+/* ---------- 6. 不再支持手动标记「我」 ---------- */
 var d6 = Places.normalize({ places: [], persons: [], relations: [] });
 var np = Places.addPerson(d6, { name: '我', placeId: null, isRoot: true });
-ok(d6.rootId === np.id, 'isRoot 会设为 rootId');
+ok(d6.rootId === undefined, 'addPerson 的 isRoot 参数被忽略，不再写入 rootId');
 
-/* ---------- 6b. 默认起点：未指定时取第一人，指定后以指定为准 ---------- */
+/* ---------- 6b. 起点固定为第一人 ---------- */
 var d6b = Places.normalize({
     places: [],
     persons: [{ id: 'a', name: '甲' }, { id: 'b', name: '乙' }],
-    relations: []
+    relations: [],
+    rootId: 'b' // 旧数据里残留的显式起点应被丢弃
 });
-ok(d6b.rootId === null, '未指定 rootId 时为 null');
-ok(Places.effectiveRootId(d6b) === 'a', '未指定 → 默认第一人');
-d6b.rootId = 'b';
-ok(Places.effectiveRootId(d6b) === 'b', '显式 rootId 优先于第一人');
-d6b.rootId = '已删除的人';
-ok(Places.effectiveRootId(d6b) === 'a', 'rootId 指向不存在的人 → 回落到第一人');
-d6b.rootId = 'b';
-Places.removePerson(d6b, 'b');
-ok(d6b.rootId === null && Places.effectiveRootId(d6b) === 'a', '删除起点人物 → 回落到第一人');
+ok(d6b.rootId === undefined, 'normalize 丢弃显式 rootId');
+ok(Places.effectiveRootId(d6b) === 'a', '起点固定为第一人，不受旧 rootId 影响');
 Places.removePerson(d6b, 'a');
+ok(Places.effectiveRootId(d6b) === 'b', '删掉第一人后由下一个人接任起点');
+Places.removePerson(d6b, 'b');
 ok(Places.effectiveRootId(d6b) === null, '没有人物时起点为 null');
 ok(Places.effectiveRootId(null) === null, '空档案不抛错');
 
@@ -184,6 +180,7 @@ ok(d10c.persons.filter(function (p) { return p.id === 'y1'; })[0].titles.length 
 var fs = require('fs');
 var appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 ok(/places:\s*state\.data\.places/.test(appSrc), '导出数据必须带 places（地点名/坐标）');
+ok(!/rootId:\s*state\.data\.rootId/.test(appSrc), '导出数据不再带 rootId（不再支持手动标记「我」）');
 var d11 = Places.normalize({
     places: [{ id: 'pl1', name: '爷爷奶奶家', note: '村东头', lat: 31, lng: 111 }],
     persons: [{ id: 'a', name: '我', placeId: 'pl1' }],
@@ -220,7 +217,7 @@ function spouseExists(a, b) {
 }
 ok(c5p && cMa && spouseExists(c5p, cMa), '5爹 与 妈 自动建配偶关系');
 ok(cGong && cPo && spouseExists(cGong, cPo), '公 与 婆 自动建配偶关系');
-ok(combo.rootId === 'cme', '拆分后 rootId 保持不变');
+ok(combo.rootId === undefined, '合写拆分不再保留 rootId');
 var comboCount = combo.persons.length;
 var again = Places.normalize(JSON.parse(JSON.stringify(combo)));
 ok(again.persons.length === comboCount, '重复 normalize 不重复拆分（幂等）');
