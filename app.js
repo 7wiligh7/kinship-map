@@ -2240,6 +2240,7 @@ function openInfoCard(id) {
     document.getElementById('infoName').textContent = p.name;
     var kin = document.getElementById('infoKin');
     var pathEl = document.getElementById('infoPath');
+    var aliasEl = document.getElementById('infoAlias');
     var k = computeKinship();
     var lab = k ? k.labels[id] : null;
     if (id === state.data.rootId) {
@@ -2247,10 +2248,18 @@ function openInfoCard(id) {
         kin.className = 'kin-badge';
         kin.style.display = '';
         pathEl.classList.remove('show');
+        aliasEl.classList.remove('show');
     } else if (lab) {
         kin.textContent = lab.label;
         kin.className = 'kin-badge' + (lab.exact ? '' : ' inexact');
         kin.style.display = '';
+        // 正名旁边给出本土俗称：高祖父（又叫 老太爷、祖爷爷、太爷爷）
+        if (lab.exact && lab.alias && lab.alias.length) {
+            aliasEl.textContent = '又叫：' + lab.alias.slice(0, 3).join(' · ');
+            aliasEl.classList.add('show');
+        } else {
+            aliasEl.classList.remove('show');
+        }
         if (!lab.exact && lab.path && lab.path.length) {
             pathEl.textContent = lab.path.join(' → ');
             pathEl.classList.add('show');
@@ -2259,12 +2268,20 @@ function openInfoCard(id) {
         }
     } else {
         kin.style.display = 'none';
-        pathEl.classList.remove('show');
+        aliasEl.classList.remove('show');
+        // 算不出称谓时别静默留空：把原因写出来，用户才知道是「没标记我」还是「关系链没接上」
+        if (!k) {
+            pathEl.textContent = '还没有标记「我」：编辑某个人物 → 勾选「标记为“我”」，才能换算称谓';
+        } else {
+            pathEl.textContent = '和「我」之间还没有连上的关系链：补一条关系（谁是谁的什么人）就能换算称谓';
+        }
+        pathEl.classList.add('show');
     }
     var bits = [];
     if (p.age != null) bits.push('年龄：' + p.age + ' 岁');
     if (p.titles.length) bits.push('手填称谓：' + p.titles.join('、'));
     document.getElementById('infoTitles').textContent = bits.join('　');
+    renderMutualTitles(id, lab);
     renderRelList(id);
     document.getElementById('relForm').classList.remove('show');
     document.getElementById('infoCard').classList.add('show');
@@ -2272,6 +2289,57 @@ function openInfoCard(id) {
 
 function closeInfoCard() {
     document.getElementById('infoCard').classList.remove('show');
+}
+
+/* ===== 双向称谓换算（信息卡）：处「同龄不同辈」时称呼最易搞错，这里一次给两个方向 ===== */
+
+// 同年龄段判定阈值：两人年龄差这么多岁以内算「同年龄段」，辈分却不同时给出特别提示
+var KIN_CLOSE_AGE = 10;
+
+function renderMutualTitles(id, fwdLab) {
+    var box = document.getElementById('infoMutual');
+    if (!box) return;
+    box.classList.remove('show');
+    if (!state.data || !state.data.rootId || id === state.data.rootId) return;
+    var m = null;
+    try {
+        m = Kinship.mutual(state.data.rootId, id, state.data.persons, state.data.relations);
+    } catch (e) { m = null; }
+    if (!m || (!m.iCall && !m.theyCall)) return; // 未连进「我」的关系网：无换算可给
+
+    var p = findPerson(id);
+    var me = findPerson(state.data.rootId);
+    var he = p && p.gender === 'f' ? '她' : '他';
+
+    function val(lab) {
+        if (!lab) return '<span class="kin-none">没有到「我」的称呼链，先补一条关系</span>';
+        var alias = lab.alias && lab.alias.length ? lab.alias.slice(0, 2).join(' · ') : '';
+        return '<span class="kin-val' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>' +
+            (alias ? '<span class="kin-alias">又叫 ' + esc(alias) + '</span>' : '');
+    }
+
+    var html =
+        '<div class="kin-mutual-title">称谓换算' + (fwdLab && fwdLab.exact ? '' : '（按最短关系链推算）') + '</div>' +
+        '<div class="kin-mutual-row"><span class="kin-who">我 → ' + he + '</span>' + val(m.iCall) + '</div>' +
+        '<div class="kin-mutual-row"><span class="kin-who">' + he + ' → 我</span>' + val(m.theyCall) + '</div>';
+
+    // 辈分差 + 同龄不同辈提示：称呼看辈分不看年龄
+    var g = m.genDiff;
+    if (g !== null && g !== 0) {
+        html += '<div class="kin-gen">辈分：' + (g < 0 ? he + '高我 ' + (-g) + ' 辈' : he + '低我 ' + g + ' 辈') + '</div>';
+        var bothAged = me && p && typeof me.age === 'number' && typeof p.age === 'number';
+        if (bothAged) {
+            var gap = Math.abs(me.age - p.age);
+            if (gap <= KIN_CLOSE_AGE) {
+                var verdict = g < 0
+                    ? '我年纪' + (me.age <= p.age ? '更大' : '相仿') + '也照样叫' + he + '「' + esc(m.iCall ? m.iCall.label : '') + '」'
+                    : he + '年纪' + (p.age <= me.age ? '更大' : '相仿') + '也要叫我「' + esc(m.theyCall ? m.theyCall.label : '') + '」';
+                html += '<div class="kin-mutual-note">⚠ 同年龄段不同辈：差 ' + gap + ' 岁但差 ' + Math.abs(g) + ' 辈。称呼以辈分为准——' + verdict + '</div>';
+            }
+        }
+    }
+    box.innerHTML = html;
+    box.classList.add('show');
 }
 
 function editFromCard() {
@@ -2484,14 +2552,14 @@ function renderGraph() {
         var arr = layers[g];
         var x0 = (W - arr.length * COLW) / 2 + COLW / 2;
         arr.forEach(function (item, i) {
-            pos[item.p.id] = { x: x0 + i * COLW, y: PAD + gi * ROWH, label: item.l.label };
+            pos[item.p.id] = { x: x0 + i * COLW, y: PAD + gi * ROWH, label: item.l.label, alias: item.l.alias || [] };
         });
     });
     if (unreach.length) {
         var x0u = (W - unreach.length * COLW) / 2 + COLW / 2;
         var yu = PAD + gens.length * ROWH;
         unreach.forEach(function (p, i) {
-            pos[p.id] = { x: x0u + i * COLW, y: yu, label: p.titles[0] || '' };
+            pos[p.id] = { x: x0u + i * COLW, y: yu, label: p.titles[0] || '', alias: [] };
         });
     }
     var edgesHtml = '';
@@ -2512,7 +2580,7 @@ function renderGraph() {
         nodesHtml += '<g class="g-node' + (isRoot ? ' root' : '') + '" data-id="' + esc(p.id) + '" transform="translate(' + pt.x + ',' + pt.y + ')">' +
             '<circle r="18"></circle>' +
             '<text class="g-node-name" y="5">' + esc(p.name) + '</text>' +
-            '<text class="g-node-title" y="34">' + esc(pt.label) + '</text>' +
+            '<text class="g-node-title" y="34">' + (pt.alias && pt.alias.length ? '<title>' + esc(pt.label + '（又叫 ' + pt.alias.join('、') + '）') + '</title>' : '') + esc(pt.label) + '</text>' +
             '</g>';
     });
     body.innerHTML = '<svg class="graph-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + edgesHtml + nodesHtml + '</svg>';
@@ -2562,11 +2630,14 @@ function onSearch(q) {
     var k = computeKinship();
     var results = [];
     state.data.persons.forEach(function (p) {
-        var lab = k && k.labels[p.id] ? k.labels[p.id].label : '';
+        var lab = k && k.labels[p.id] ? k.labels[p.id] : null;
+        var label = lab ? lab.label : '';
+        var alias = lab && lab.alias ? lab.alias : [];
         var hit = p.name.indexOf(q) > -1 ||
-            (lab && lab.indexOf(q) > -1) ||
+            (label && label.indexOf(q) > -1) ||
+            alias.some(function (a) { return a.indexOf(q) > -1; }) ||
             p.titles.some(function (t) { return t.indexOf(q) > -1; });
-        if (hit) results.push({ p: p, lab: lab });
+        if (hit) results.push({ p: p, lab: label, alias: alias });
     });
     if (!results.length) {
         box.innerHTML = '<div class="search-empty">没有匹配「' + esc(q) + '」的人</div>';
@@ -2574,7 +2645,9 @@ function onSearch(q) {
         return;
     }
     box.innerHTML = results.slice(0, 20).map(function (r) {
-        var sub = r.lab || r.p.titles.join(' / ');
+        var sub = r.lab
+            ? r.lab + (r.alias.length ? '（又叫 ' + r.alias.slice(0, 2).join(' / ') + '）' : '')
+            : r.p.titles.join(' / ');
         return '<div class="search-item" onclick="jumpToPerson(\'' + esc(r.p.id) + '\')">' +
             '<span class="search-item-name">' + esc(r.p.name) + '</span>' +
             '<span class="search-item-title">' + esc(sub) + '</span></div>';
@@ -2596,8 +2669,8 @@ function boot() {
     renderStartup();
     // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
     try {
-        document.title = '亲属关系地图 · 构建 1.38';
-        console.info('[kinmap] build 1.38 · 切档清搜索 + 可删除最后一个区域');
+        document.title = '亲属关系地图 · 构建 1.43';
+        console.info('[kinmap] build 1.43 · 信息卡：算不出称谓时直接写出原因');
     } catch (e) {}
 }
 
