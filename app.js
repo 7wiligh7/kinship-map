@@ -2291,6 +2291,8 @@ function addPlace() {
 // 打开地点弹窗（新增 / 编辑）：地点信息 + 该地点的称谓条目（姓名/性别/年龄）都在这里
 function openPlaceModal(placeId, latlng) {
     hideRelForm(); // 两个独立窗口互斥
+    // 打开编辑器前先兜底拆分合写称谓（含 / 的项），确保列表里不再出现「6公/婆」这种
+    if (state.data && Places.splitCombinedNames(state.data)) saveData();
     state.editingPlaceId = placeId || null;
     pendingLatLng = latlng || null;
     var pl = placeId ? Places.findPlace(state.data, placeId) : null;

@@ -197,6 +197,20 @@ var Places = (function () {
             var prefix = rankPrefix(segs[0]);
             p.name = segs[0];
             if (!p.gender) p.gender = genderOfSeg(segs[0]);
+            // 清理 titles 里同类的合写项：拆成独立称谓、去掉含 / 的原项
+            if (p.titles && p.titles.length) {
+                var cleanTitles = [];
+                p.titles.forEach(function (t) {
+                    if (typeof t !== 'string' || t.indexOf('/') < 0) { if (t) cleanTitles.push(t); return; }
+                    var parts = t.split('/').map(function (s) { return s.trim(); }).filter(Boolean);
+                    var tp = rankPrefix(parts[0] || '');
+                    parts.forEach(function (part) {
+                        var nm = rankPrefix(part) ? part : (tp + part);
+                        if (nm && cleanTitles.indexOf(nm) < 0) cleanTitles.push(nm);
+                    });
+                });
+                p.titles = cleanTitles;
+            }
             var prev = p;
             for (var si = 1; si < segs.length; si++) {
                 // 后半段继承排行前缀：婆 → 6婆

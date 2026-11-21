@@ -222,4 +222,20 @@ var comboCount = combo.persons.length;
 var again = Places.normalize(JSON.parse(JSON.stringify(combo)));
 ok(again.persons.length === comboCount, '重复 normalize 不重复拆分（幂等）');
 
+// titles 里的合写项也被清理（不留含 / 的称谓）
+var tCombo = Places.normalize({
+    version: 3, places: [{ id: 'tp', name: 'T', lat: 1, lng: 2 }],
+    persons: [
+        { id: 'tme', name: '我', gender: 'm', titles: [], placeId: 'tp' },
+        { id: 'tx', name: '6公/婆', gender: '', titles: ['6公/婆'], placeId: 'tp' }
+    ],
+    relations: [], rootId: 'tme', regions: []
+});
+var tLeft = tCombo.persons.filter(function (p) {
+    return p.name.indexOf('/') >= 0 || (p.titles || []).some(function (t) { return t.indexOf('/') >= 0; });
+});
+ok(tLeft.length === 0, '拆分后 name 与 titles 都不再含 /（实际残留 ' + tLeft.length + '）');
+var tX = tCombo.persons.filter(function (p) { return p.name === '6公'; })[0];
+ok(tX && tX.titles.indexOf('6婆') >= 0, 'titles 里的合写展开为 6公/6婆');
+
 console.log('pass=' + pass + ' fail=' + fail);
