@@ -308,5 +308,45 @@ ok(!!kid && !!dad && !!sib && angDist(kid, dad) < angDist(kid, sib),
     '堂兄弟与爸爸不同地点：布局上应挂在直系父亲分支，而不是旁系兄弟分支');
 ok(lr.length === 3, '布局用的挂靠不应改写原始关系数组');
 
+/* ---------- 地点分树（groupByPlace）：每地点一棵、最高辈为根、根连我、同辈同环 ---------- */
+function radialPlaced(persons, relations, rootId) {
+    var kk = Kinship.compute(rootId, persons, relations);
+    return GraphLayout.radial({
+        persons: persons, relations: relations, labels: kk.labels, rootId: rootId, groupByPlace: true
+    });
+}
+var gpP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'a1', name: '15公', gender: 'm', age: null, titles: [], placeId: 'pA' },
+    { id: 'a2', name: '4爹', gender: 'm', age: null, titles: [], placeId: 'pA' },
+    { id: 'a3', name: '2婆', gender: 'f', age: null, titles: [], placeId: 'pA' },
+    { id: 'b1', name: '三叔', gender: 'm', age: null, titles: [], placeId: 'pB' },
+    { id: 'b2', name: '9叔', gender: 'm', age: null, titles: [], placeId: 'pB' },
+    { id: 'c1', name: '三婆', gender: 'f', age: null, titles: [], placeId: 'pC' }
+];
+var gpR = [
+    { from: 'a1', to: 'a2', type: '父亲' }, { from: 'a1', to: 'a3', type: '配偶' },
+    { from: 'b1', to: 'b2', type: '弟弟' }
+];
+var gpG = radialPlaced(gpP, gpR, 'me');
+function nodeOfG(g, id) { return g.nodes.filter(function (n) { return n.id === id; })[0]; }
+function angDeg(n) { return n.angle * 180 / Math.PI; }
+// 最高辈男性为根：地点A最高辈是15公(m)→根；地点B三叔(m)→根；地点C只有三婆(f)→根
+var a1 = nodeOfG(gpG, 'a1'), b1 = nodeOfG(gpG, 'b1'), c1 = nodeOfG(gpG, 'c1');
+ok(gpG.nodes.length === 7, '地点分树不应丢人（实际 ' + gpG.nodes.length + '）');
+// 根连我：每个地点根都有一条到中心的 kin 线
+var rootEdgeTargets = gpG.edges.filter(function (e) {
+    return e.kind === 'kin' && (e.x1 === gpG.center.x || e.title === '15公' || e.title === '三叔' || e.title === '三婆');
+}).map(function (e) { return e.title; });
+ok(rootEdgeTargets.indexOf('15公') >= 0 || gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '15公'; }),
+    '地点A的根（15公）应连一条线到「我」');
+ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三叔'; }), '地点B的根（三叔）应连到「我」');
+ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三婆'; }), '地点C的根（只有女性三婆）应连到「我」');
+// 同辈同环：同为最高辈的 15公/三婆 半径相同
+ok(a1 && c1 && Math.abs(a1.r - c1.r) < 1, '同辈（15公/三婆）应在同一环（半径相同）');
+// 不同地点分占不同扇区：三叔(b) 与 15公(a) 角度差明显
+ok(b1 && a1 && Math.abs(angDeg(b1) - angDeg(a1)) > 30,
+    '不同地点应分占不同扇区（实际角度差 ' + Math.abs(angDeg(b1) - angDeg(a1)).toFixed(0) + '°）');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

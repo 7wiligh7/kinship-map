@@ -975,6 +975,8 @@ var GraphLayout = (function () {
         var relations = input.relations || [];
         var labels = input.labels || {};
         var rootId = input.rootId || null;
+        var groupByPlace = !!input.groupByPlace; // 按地点分树：每地点一棵、根连我、各占一扇区
+        var placeRoots = [];  // 按地点分树时各地点树的根（供"根连我"连线用）
 
         /* ---------- 1. 收集：所有人先进 info（没连通的人也要画在最外圈） ---------- */
         var people = {};
@@ -1363,7 +1365,116 @@ var GraphLayout = (function () {
             }
         }
 
-        assignRootAngles();
+        // 按地点分树的角度分配：每个地点一棵树、各占一个扇区。
+        function assignPlaceTreeAngles() {
+            // 1) 按地点分组（无地点的人单独一组）
+            var groups = {};
+            Object.keys(info).forEach(function (id) {
+                if (id === rootId) return;
+                var pid = info[id].placeId == null ? '__nolocation__' : info[id].placeId;
+                (groups[pid] = groups[pid] || []).push(id);
+            });
+            var groupKeys = Object.keys(groups).sort(function (a, b) {
+                if (a === '__nolocation__') return 1;
+                if (b === '__nolocation__') return -1;
+                return groups[a][0] - groups[b][0]; // 按首次出现顺序
+            });
+            if (!groupKeys.length) return;
+
+            // 2) 每组选根：最高辈男性 → 最高辈女性 → 往下推排行最大男性
+            function genOf(id) {
+                var g = info[id].gen;
+                return g == null ? 99 : g;
+            }
+            function pickRoot(ids) {
+                var minGen = Math.min.apply(null, ids.map(genOf));
+                var top = ids.filter(function (id) { return genOf(id) === minGen; });
+                var male = top.filter(function (id) { return info[id].gender === 'm'; });
+                if (male.length) return male.sort(function (a, b) { return info[a].rank - info[b].rank || info[a].order - info[b].order; })[0];
+                var female = top.filter(function (id) { return info[id].gender === 'f'; });
+                if (female.length) return female.sort(function (a, b) { return info[a].rank - info[b].rank || info[a].order - info[b].order; })[0];
+                // 最高辈没有男女标注：往下推，选排行最大的男性（rank 最小，null 排最后）
+                var males = ids.filter(function (id) { return info[id].gender === 'm'; });
+                males.sort(function (a, b) {
+                    var ra = info[a].rank == null ? 999 : info[a].rank;
+                    var rb = info[b].rank == null ? 999 : info[b].rank;
+                    return ra - rb || genOf(a) - genOf(b) || info[a].order - info[b].order;
+                });
+                return males[0] || ids.slice().sort(function (a, b) { return genOf(a) - genOf(b) || info[a].order - info[b].order; })[0];
+            }
+
+            // 3) 每组内建树（同组内按 adj BFS，长辈优先）+ 权重
+            var groupRoots = {};
+            var pTreeParent = {};
+            var pTreeChildren = {};
+            var pWeight = {};
+            function pCalcW(id) {
+                if (pWeight[id] !== undefined) return pWeight[id];
+                var total = 1;
+                (pTreeChildren[id] || []).forEach(function (c) { total += pCalcW(c); });
+                pWeight[id] = total;
+                return total;
+            }
+            groupKeys.forEach(function (key) {
+                var ids = groups[key];
+                var root = pickRoot(ids);
+                groupRoots[key] = root;
+                placeRoots.push(root);
+                var idSet = {};
+                ids.forEach(function (id) { idSet[id] = true; });
+                var visited = {};
+                visited[root] = true;
+                var q = [root], h = 0;
+                while (h < q.length) {
+                    var cur = q[h++];
+                    var nbrs = (adj[cur] || []).slice().filter(function (e) { return idSet[e.id] && !visited[e.id]; });
+                    nbrs.sort(function (a, b) {
+                        var ga = genOf(a.id), gb = genOf(b.id);
+                        if (ga !== gb) return ga - gb;      // 长辈优先当父
+                        return a.prio - b.prio || info[a.id].order - info[b.id].order;
+                    });
+                    nbrs.forEach(function (e) {
+                        if (visited[e.id]) return;
+                        visited[e.id] = true;
+                        pTreeParent[e.id] = cur;
+                        (pTreeChildren[cur] = pTreeChildren[cur] || []).push(e.id);
+                        q.push(e.id);
+                    });
+                }
+                // 没被 BFS 覆盖的同组人，挂到根
+                ids.forEach(function (id) {
+                    if (!visited[id]) {
+                        pTreeParent[id] = root;
+                        (pTreeChildren[root] = pTreeChildren[root] || []).push(id);
+                    }
+                });
+                pCalcW(root);
+            });
+
+            // 4) 扇区分配：组数均分 360°，每组扇区内按树权重展开
+            var step = R_TAU / groupKeys.length;
+            function placeSubtree(id, center, span) {
+                info[id].angle = center;
+                info[id].angled = true;
+                var kids = pTreeChildren[id] || [];
+                if (!kids.length) return;
+                var total = 0;
+                kids.forEach(function (k) { total += pWeight[k]; });
+                var cursor = center - span / 2;
+                kids.forEach(function (k) {
+                    var share = total ? span * (pWeight[k] / total) : 0;
+                    placeSubtree(k, cursor + share / 2, Math.max(0.04, share));
+                    cursor += share;
+                });
+            }
+            groupKeys.forEach(function (key, gi) {
+                var center = R_START + gi * step;
+                placeSubtree(groupRoots[key], center, step * 0.9);
+            });
+        }
+
+        if (groupByPlace) assignPlaceTreeAngles();
+        else assignRootAngles();
 
         var ringMap = {};
         Object.keys(info).forEach(function (id) {
@@ -1378,7 +1489,8 @@ var GraphLayout = (function () {
             var ids = ringMap[d];
             var sumW = 0;
             ids.forEach(function (id) { sumW += info[id].titleW + R_NODE_GAP; });
-            var need = (sumW * 1.08) / R_TAU;
+            // 预留足够周长为 packRing 推开名框：地点分树时同圈人更多，系数要更宽松
+            var need = (sumW * (groupByPlace ? 1.5 : 1.08)) / R_TAU;
             var r;
             if (d === 0) {
                 r = 0;
@@ -1571,6 +1683,13 @@ var GraphLayout = (function () {
         norm.kin.forEach(function (l) {
             addEdge(l.a, l.b, 'kin', l.types, l.ris);
         });
+        // 按地点分树：每个地点树的根连一条线到中心的「我」
+        if (groupByPlace) {
+            placeRoots.forEach(function (rid) {
+                if (rid === rootId) return;
+                addEdge(rootId, rid, 'kin', [info[rid].name || '']);
+            });
+        }
 
         /* ---------- 7. 关系字：只放在完全无遮挡的位置，宁缺勿叠 ---------- */
         var obstacles = [];

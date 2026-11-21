@@ -3351,7 +3351,8 @@ function renderGraph() {
         persons: state.data.persons,
         relations: state.data.relations,
         labels: k.labels,
-        rootId: rootId
+        rootId: rootId,
+        groupByPlace: true
     });
     if (!g.nodes.length) {
         body.innerHTML = '<div class="graph-empty">还没有可排布的人物</div>';
