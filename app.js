@@ -2246,7 +2246,7 @@ function openPlaceModal(placeId, latlng) {
 // 地点编辑器里加一行称谓条目（一个条目 = 一个称谓）。
 // isRoot=true 表示这行当前是「我」的起点；kinId 传人物 id 时，
 // 行下方带「推算称谓/互称」展开区。
-// 两行布局：第 1 行 ＋|称谓名|×（名字独占整行，手机上不被挤没），第 2 行 性别|年龄。
+// 一行布局：＋ | 称谓名 | 性别 | 年龄 | ×；称谓名占剩余宽度。
 function addPlaceTitleRow(name, gender, age, isRoot, kinId) {
     var rows = document.getElementById('placeTitleRows');
     if (!rows) return;
@@ -2256,13 +2256,11 @@ function addPlaceTitleRow(name, gender, age, isRoot, kinId) {
         '<button type="button" class="pt-me' + (isRoot ? ' on' : '') + '" data-act="markPlaceRootRow" ' +
         'title="' + (isRoot ? '当前「我」' : '设为「我」') + '" aria-label="设为「我」" ' +
         'aria-pressed="' + (isRoot ? 'true' : 'false') + '">＋</button>' +
-        '<input class="input pt-name" placeholder="称谓，如 爷爷" aria-label="称谓" />' +
-        '<button type="button" class="btn-remove" data-act="removePlaceTitleRow" aria-label="删除该称谓条目">×</button>' +
-        '<div class="pt-meta">' +
+        '<input class="input pt-name" placeholder="称谓" title="称谓，如 爷爷" aria-label="称谓" />' +
         '<select class="input pt-gender" aria-label="性别">' +
         '<option value="">性别</option><option value="m">男</option><option value="f">女</option></select>' +
         '<input class="input pt-age" type="number" min="0" max="150" step="1" placeholder="年龄" aria-label="年龄" />' +
-        '</div>' +
+        '<button type="button" class="btn-remove" data-act="removePlaceTitleRow" aria-label="删除该称谓条目">×</button>' +
         (kinId ? '<details class="pt-kin-wrap"><summary>推算出的称谓与互称</summary><div class="pt-kin kin-box"></div></details>' : '');
     row.querySelector('.pt-name').value = name || '';
     row.querySelector('.pt-gender').value = gender || '';
@@ -2971,6 +2969,24 @@ function setRootPerson(id) {
     toast(wasRoot ? '「' + p.name + '」已经是「我」' : '已把「' + p.name + '」设为「我」');
 }
 
+// 自动补齐关系网：按每个人相对「我」的称谓（含名字前的排行数）反查规则表，
+// 为没连进关系网的人反推关系边——只新增、不改动已有关系；
+// 同辈之间用排行定长幼（排行小的是哥哥/姐姐），关系图里同辈也按排行排序
+function autoFillRelations() {
+    if (!state.data || !state.data.persons.length) { toast('还没有人物数据'); return; }
+    var rootId = effectiveRootId();
+    if (!rootId) { toast('先设一个「我」的起点'); return; }
+    var adds = Kinship.buildRelations(state.data.persons, state.data.relations, rootId);
+    if (!adds.length) { toast('称谓都已连进关系网，没有可补的了'); return; }
+    adds.forEach(function (r) { state.data.relations.push(r); });
+    saveData();
+    markUserModified();
+    renderAll(false);
+    if (state.openPlaceId && document.getElementById('infoCard').classList.contains('show')) openPlaceCard(state.openPlaceId);
+    if (document.getElementById('graphPanel').classList.contains('show')) renderGraph();
+    toast('已补齐 ' + adds.length + ' 条关系');
+}
+
 function renderGraph() {
     var body = document.getElementById('graphBody');
     fillGraphRootSelect();
@@ -2984,57 +3000,74 @@ function renderGraph() {
         body.innerHTML = '<div class="graph-empty">称谓推算暂不可用：检查人物关系数据</div>';
         return;
     }
-    var layers = {};
-    var unreach = [];
-    state.data.persons.forEach(function (p) {
-        var l = k.labels[p.id];
-        if (l) { (layers[l.gen] = layers[l.gen] || []).push({ p: p, l: l }); }
-        else { unreach.push(p); }
+    var g = GraphLayout.layout({
+        persons: state.data.persons,
+        relations: state.data.relations,
+        labels: k.labels,
+        rootId: rootId
     });
-    var gens = Object.keys(layers).map(Number).sort(function (a, b) { return a - b; });
-    var COLW = 130, ROWH = 100, PAD = 50;
-    var maxN = 1;
-    gens.forEach(function (g) { maxN = Math.max(maxN, layers[g].length); });
-    if (unreach.length) maxN = Math.max(maxN, unreach.length);
-    var W = PAD * 2 + maxN * COLW;
-    var H = PAD * 2 + (gens.length + (unreach.length ? 1 : 0)) * ROWH;
-    var pos = {};
-    gens.forEach(function (g, gi) {
-        var arr = layers[g];
-        var x0 = (W - arr.length * COLW) / 2 + COLW / 2;
-        arr.forEach(function (item, i) {
-            pos[item.p.id] = { x: x0 + i * COLW, y: PAD + gi * ROWH, label: item.l.label, alias: item.l.alias || [] };
-        });
-    });
-    if (unreach.length) {
-        var x0u = (W - unreach.length * COLW) / 2 + COLW / 2;
-        var yu = PAD + gens.length * ROWH;
-        unreach.forEach(function (p, i) {
-            pos[p.id] = { x: x0u + i * COLW, y: yu, label: p.titles[0] || '', alias: [] };
-        });
+    if (!g.nodes.length) {
+        body.innerHTML = '<div class="graph-empty">还没有可排布的人物</div>';
+        return;
     }
-    var edgesHtml = '';
-    state.data.relations.forEach(function (r, ri) {
-        var a = pos[r.from], b = pos[r.to];
-        if (!a || !b) return;
-        var dx = b.x - a.x, dy = b.y - a.y;
-        var len = Math.sqrt(dx * dx + dy * dy) || 1;
-        var ox = -dy / len * 12, oy = dx / len * 12;
-        edgesHtml += '<line class="g-edge" data-ri="' + ri + '" x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '"></line>' +
-            '<text class="g-edge-label" data-ri="' + ri + '" x="' + ((a.x + b.x) / 2 + ox) + '" y="' + ((a.y + b.y) / 2 + oy) + '" text-anchor="middle">' + esc(r.type) + '</text>';
+    function r1(v) { return Math.round(v * 10) / 10; }
+
+    var parts = [];
+    // 世系参考线：每世一条淡虚线 + 左侧「第几世」
+    g.rows.forEach(function (row) {
+        var y = r1(row.y + 18);
+        parts.push('<line class="g-gen-tick" x1="' + (GraphLayout.LEFT_W + 6) + '" y1="' + y +
+            '" x2="' + r1(g.width - 12) + '" y2="' + y + '"></line>');
+        parts.push('<text class="g-gen-label' + (row.isRootRow ? ' root' : '') + '" x="' +
+            (GraphLayout.LEFT_W - 8) + '" y="' + r1(row.y + 23) + '" text-anchor="end">' +
+            esc(row.label) + '</text>');
+        if (row.isRootRow) {
+            parts.push('<text class="g-gen-me" x="' + (GraphLayout.LEFT_W - 8) + '" y="' +
+                r1(row.y + 39) + '" text-anchor="end">我</text>');
+        }
     });
-    var nodesHtml = '';
-    state.data.persons.forEach(function (p) {
-        var pt = pos[p.id];
-        if (!pt) return;
-        var isRoot = p.id === rootId;
-        nodesHtml += '<g class="g-node' + (isRoot ? ' root' : '') + '" data-id="' + esc(p.id) + '" transform="translate(' + pt.x + ',' + pt.y + ')">' +
-            '<circle r="18"></circle>' +
-            '<text class="g-node-name" y="5">' + esc(p.name) + '</text>' +
-            '<text class="g-node-title" y="34">' + (pt.alias && pt.alias.length ? '<title>' + esc(pt.label + '（又叫 ' + pt.alias.join('、') + '）') + '</title>' : '') + esc(pt.label) + '</text>' +
-            '</g>';
+
+    // 关系线：父母→子女的下垂线/兄弟横杆、夫妻婚线、旁系连线
+    g.edges.forEach(function (e) {
+        var ri = esc(e.ris.join(' '));
+        if (e.kind === 'descent') {
+            parts.push('<path class="g-edge g-edge-descent" data-ri="' + ri + '" d="' + e.d + '">' +
+                '<title>' + esc(e.title) + '</title></path>');
+        } else if (e.kind === 'spouse') {
+            parts.push('<line class="g-edge g-edge-spouse" data-ri="' + ri + '" x1="' + r1(e.x1) +
+                '" y1="' + r1(e.y1) + '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '">' +
+                '<title>配偶</title></line>');
+        } else if (e.d) {
+            parts.push('<path class="g-edge" data-ri="' + ri + '" d="' + e.d + '">' +
+                '<title>' + esc(e.title) + '</title></path>');
+        } else {
+            parts.push('<line class="g-edge" data-ri="' + ri + '" x1="' + r1(e.x1) + '" y1="' + r1(e.y1) +
+                '" x2="' + r1(e.x2) + '" y2="' + r1(e.y2) + '"><title>' + esc(e.title) + '</title></line>');
+        }
     });
-    body.innerHTML = '<svg class="graph-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + edgesHtml + nodesHtml + '</svg>';
+
+    // 关系文字（已做过避让，带背景色描边，压线也能看清）
+    g.labels.forEach(function (l) {
+        parts.push('<text class="g-edge-label" data-ri="' + esc(l.ris.join(' ')) + '" x="' + r1(l.x) +
+            '" y="' + r1(l.y) + '" text-anchor="' + l.anchor + '">' + esc(l.text) + '</text>');
+    });
+
+    // 名框：族谱式方框，框内姓名、框下称谓
+    g.nodes.forEach(function (n) {
+        var tip = n.name + (n.title ? ' · ' + n.title : '');
+        if (n.alias && n.alias.length) tip += '（又叫 ' + n.alias.join('、') + '）';
+        parts.push('<g class="g-node' + (n.isRoot ? ' root' : '') + '" data-id="' + esc(n.id) + '">' +
+            '<title>' + esc(tip) + '</title>' +
+            '<rect x="' + r1(n.x - n.w / 2) + '" y="' + r1(n.y) + '" width="' + r1(n.w) +
+            '" height="' + g.boxH + '" rx="8"></rect>' +
+            '<text class="g-node-name" x="' + r1(n.x) + '" y="' + r1(n.y + 23) + '">' + esc(n.name) + '</text>' +
+            (n.titleText ? '<text class="g-node-title" x="' + r1(n.x) + '" y="' + r1(n.y + 52) + '">' +
+                esc(n.titleText) + '</text>' : '') +
+            '</g>');
+    });
+
+    body.innerHTML = '<svg class="graph-svg" width="' + g.width + '" height="' + g.height +
+        '" viewBox="0 0 ' + g.width + ' ' + g.height + '">' + parts.join('') + '</svg>';
     var svg = body.querySelector('svg');
     Array.prototype.forEach.call(svg.querySelectorAll('.g-node'), function (gEl) {
         var id = gEl.getAttribute('data-id');
@@ -3051,10 +3084,13 @@ function highlightPath(id, k) {
     clearHighlight();
     var ce = Kinship.computePathEdges(k, state.data.relations, id);
     if (!ce) return;
-    ce.edges.forEach(function (ri) {
-        Array.prototype.forEach.call(document.querySelectorAll('[data-ri="' + ri + '"]'), function (el) {
-            el.classList.add('hl');
-        });
+    var want = {};
+    ce.edges.forEach(function (ri) { want[String(ri)] = true; });
+    Array.prototype.forEach.call(document.querySelectorAll('.g-edge, .g-edge-label'), function (el) {
+        var list = (el.getAttribute('data-ri') || '').split(/\s+/);
+        for (var i = 0; i < list.length; i++) {
+            if (want[list[i]]) { el.classList.add('hl'); return; }
+        }
     });
     Object.keys(ce.nodes).forEach(function (nid) {
         var el = document.querySelector('.g-node[data-id="' + nid + '"]');
@@ -3159,6 +3195,7 @@ var ACTIONS = {
     // 带参动作（元素自身携带 data-* 参数）
     deletePersonById: function (el) { deletePersonById(el.dataset.id); },
     openGraph: openGraph,
+    autoFillRelations: function () { autoFillRelations(); },
     importData: importData,
     exportData: exportData,
     clearAll: clearAll,

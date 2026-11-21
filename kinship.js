@@ -32,12 +32,22 @@
     '姻亲': -1
   };
 
+  // 直接关系里的「祖辈/孙辈」是跨两辈，不能按组统一算 ±1：
+  //   爷爷/奶奶/外公/外婆 = 上两辈（-2）
+  //   孙子/孙女/外孙/外孙女 = 下两辈（+2）
+  // 其余晚辈（儿子/女儿/侄子/侄女/外甥/外甥女）仍是下一辈（+1）。
+  var TYPE_DELTA = {
+    '爷爷': -2, '奶奶': -2, '外公': -2, '外婆': -2,
+    '孙子': 2, '孙女': 2, '外孙': 2, '外孙女': 2
+  };
+
   var typeGroup = {};
   TYPE_GROUPS.forEach(function (g) {
     g.types.forEach(function (t) { typeGroup[t] = g.group; });
   });
 
   function delta(type) {
+    if (TYPE_DELTA[type] !== undefined) return TYPE_DELTA[type];
     var g = typeGroup[type];
     return g === undefined ? 0 : GROUP_DELTA[g];
   }
@@ -74,6 +84,8 @@
     '外舅祖父': { alias: ['外舅公', '舅姥爷'] },
     '外姨祖母': { alias: ['外姨婆', '姨姥姥'] },
     /* 父辈 */
+    '父亲': { alias: ['爸爸', '爹', '爸'] },
+    '母亲': { alias: ['妈妈', '娘', '妈'] },
     '伯父': { alias: ['伯伯', '大伯', '大爷'] },
     '叔父': { alias: ['叔叔', '叔'] },
     '姑姑': { alias: ['姑妈', '姑母'] },
@@ -773,6 +785,217 @@
     return [label].concat(aliasFor(label, null));
   }
 
+  /* ===================================================================
+   * 反向建网：按「相对我的称谓」反推关系边（关系图的「补齐关系网」）
+   *
+   * 数据里每个称谓都是相对「我」叫的（爷爷 / 爸爸 / 23公 / 秀姑…），
+   * 这一节把这些称谓反查回规则表，自动补出人与人之间的关系边：
+   *   · 只新增，不改动已有关系；
+   *   · 称谓前的数字是排行（"23公" = 这一辈里排第 23），同辈之间
+   *     用它定长幼（哥哥/弟弟），关系图里同辈也按排行从左到右排；
+   *   · 优先挂在已有中间人下面（爷爷挂爸爸、舅舅挂妈妈），关系图画出来
+   *     是正经世系线；中间人不存在时才直接挂在「我」下面。
+   * =================================================================== */
+
+  var CN_DIGITS = {
+    '〇': 0, '零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9
+  };
+
+  function cnToInt(s) {
+    var total = 0, cur = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      if (CN_DIGITS[c] !== undefined) cur = CN_DIGITS[c];
+      else if (c === '十') { total += (cur || 1) * 10; cur = 0; }
+      else if (c === '廿') { total += 20; cur = 0; }
+      else if (c === '卅') { total += 30; cur = 0; }
+    }
+    return total + cur;
+  }
+
+  // 拆排行前缀："23公" → {rank:23, base:"公"}、"五十姨" → {rank:50, base:"姨"}。
+  // "二丫"/"23" 这类名字不算排行（中文数字必须含 十/廿/卅 才认）。
+  function splitRank(name) {
+    var s = String(name == null ? '' : name).trim();
+    if (!s) return { rank: null, base: '' };
+    var m = /^第?(\d+)/.exec(s);
+    if (m && s.length > m[0].length) return { rank: parseInt(m[1], 10), base: s.slice(m[0].length) };
+    var cm = /^第?([〇零一二三四五六七八九十廿卅两]+)/.exec(s);
+    if (cm && s.length > cm[0].length && /[十廿卅]/.test(cm[1])) {
+      return { rank: cnToInt(cm[1]), base: s.slice(cm[0].length) };
+    }
+    return { rank: null, base: s };
+  }
+
+  // 排行（"23公" → 23；没有排行前缀返回 null）
+  function rankOf(name) { return splitRank(name).rank; }
+
+  // 去掉排行前缀后的称谓（"23公" → "公"）
+  function baseTitle(name) { return splitRank(name).base; }
+
+  // 称谓匹配强度：3=完全一致 2=俗称一致 1=前后缀近似（"公"≈"阿公"）
+  // 0.5=尾字近似（"秀姑"≈"姑姑"） 0=不匹配
+  function matchStrength(label, target) {
+    if (!label || !target) return 0;
+    target = String(target).trim();
+    if (!target) return 0;
+    var best = 0;
+    function affix(a, b) {
+      var lo = a.length <= b.length ? a : b;
+      var hi = a.length <= b.length ? b : a;
+      return lo.length > 0 && hi.length - lo.length <= 1 &&
+        (hi.lastIndexOf(lo) === 0 || hi.indexOf(lo) === hi.length - lo.length);
+    }
+    alternatives(label).forEach(function (v) {
+      if (!v) return;
+      if (v === target) { if (3 > best) best = 3; return; }
+      var aliases = aliasFor(v, null);
+      for (var i = 0; i < aliases.length; i++) {
+        if (aliases[i] === target) best = Math.max(best, 2);
+      }
+      if (best < 1 && affix(v, target)) best = 1;
+      if (best < 1) {
+        for (var j = 0; j < aliases.length; j++) {
+          if (affix(aliases[j], target)) { best = 1; break; }
+        }
+      }
+      // 尾字近似：昵称常见「修饰字 + 称谓」（秀姑/干姑），拿尾字兜底
+      if (best < 0.5 && target.length >= 2) {
+        var tail = target.charAt(target.length - 1);
+        var all = [v].concat(aliases);
+        for (var k = 0; k < all.length; k++) {
+          if (all[k] && all[k].charAt(all[k].length - 1) === tail) { best = 0.5; break; }
+        }
+      }
+    });
+    return best;
+  }
+
+  var SIBLING_WORDS = { '哥哥': 1, '弟弟': 1, '姐姐': 1, '妹妹': 1 };
+  var OLDER_WORDS = { '哥哥': 1, '姐姐': 1 };
+
+  // 自动补齐关系网：为还没连进「我」的关系网的人反推关系边。
+  // 返回新增关系数组（{from, to, type}：from 是 to 的 type），只增不改。
+  function buildRelations(persons, relations, rootId) {
+    if (!persons || !persons.length || !rootId) return [];
+    var pmap = {};
+    persons.forEach(function (p) { pmap[p.id] = p; });
+    if (!pmap[rootId]) return [];
+
+    var rels = (relations || []).slice();
+    var added = [];
+    var labels = {};
+    function recompute() { labels = compute(rootId, persons, rels).labels; }
+    recompute();
+
+    // 第一跳可直接用的关系词：关系表单里能选的类型（代际已知）
+    var directWords = [];
+    TYPE_GROUPS.forEach(function (g) {
+      g.types.forEach(function (t) { if (directWords.indexOf(t) < 0) directWords.push(t); });
+    });
+    // 第二跳起把规则表里出现过的关系词都试一遍
+    var vocab = directWords.slice();
+    Object.keys(RULES).forEach(function (key) {
+      var w = key.split('|')[1];
+      if (w && vocab.indexOf(w) < 0) vocab.push(w);
+    });
+
+    function hasLink(a, b) {
+      for (var i = 0; i < rels.length; i++) {
+        var r = rels[i];
+        if ((r.from === a && r.to === b) || (r.from === b && r.to === a)) return true;
+      }
+      return false;
+    }
+
+    // 某人的某个目标称谓的全部候选边
+    function candidatesFor(p, target) {
+      var out = [];
+      directWords.forEach(function (w) {
+        var s = matchStrength(w, target);
+        if (s > 0 && !hasLink(p.id, rootId)) {
+          out.push({ edge: { from: p.id, to: rootId, type: w }, strength: s, hops: 1, resolved: w });
+        }
+      });
+      persons.forEach(function (q) {
+        if (q.id === p.id || q.id === rootId || hasLink(p.id, q.id)) return;
+        var lab = labels[q.id];
+        if (!lab || !lab.exact || !lab.key) return;
+        vocab.forEach(function (w) {
+          var resolved = resolveRuleVariant(lab.key, w, p, pmap[rootId]);
+          if (resolved === null) return;
+          var s = matchStrength(resolved, target);
+          if (s > 0) out.push({ edge: { from: p.id, to: q.id, type: w }, strength: s, hops: 2, qid: q.id, resolved: resolved });
+        });
+      });
+      return out;
+    }
+
+    // 选边：匹配强度 > 跳数多（挂到中间人下面，世系线更正） > 排行定长幼
+    function pickBest(list, p) {
+      if (!list.length) return null;
+      var best = null;
+      list.forEach(function (c) {
+        if (!best || c.strength > best.strength ||
+            (c.strength === best.strength && c.hops > best.hops)) best = c;
+      });
+      // 排行只在「并列候选全是同一个人的兄弟姐妹词、推出来还是同一称谓」时用——
+      // 否则会把「奶奶」和「姑祖母」这种不同称谓的并列瞎分长幼
+      var tied = list.filter(function (c) {
+        return c.strength === best.strength && c.hops === best.hops;
+      });
+      if (tied.length > 1) {
+        var sib = tied.filter(function (c) { return SIBLING_WORDS[c.edge.type]; });
+        var allSib = sib.length > 1 && sib.length === tied.length &&
+          sib.every(function (c) { return c.qid === sib[0].qid && c.resolved === sib[0].resolved; });
+        if (allSib) {
+          var pr = rankOf(p.name);
+          var qr = sib[0].qid ? rankOf(pmap[sib[0].qid].name) : null;
+          if (pr != null && qr != null) {
+            var older = pr < qr;
+            for (var i = 0; i < sib.length; i++) {
+              if (!!OLDER_WORDS[sib[i].edge.type] === older) return sib[i];
+            }
+          }
+        }
+      }
+      return best;
+    }
+
+    var guard = 0;
+    var progress = true;
+    while (progress && guard++ < persons.length + 2) {
+      progress = false;
+      persons.forEach(function (p) {
+        if (p.id === rootId || labels[p.id]) return;
+        // 目标称谓：条目名（剥掉排行前缀）+ 历史手填 titles（未拆的老数据）
+        var targets = [];
+        function addTarget(v) {
+          v = String(v == null ? '' : v).trim();
+          if (!v) return;
+          var b = baseTitle(v);
+          if (b && targets.indexOf(b) < 0) targets.push(b);
+          if (targets.indexOf(v) < 0) targets.push(v);
+        }
+        addTarget(p.name);
+        (p.titles || []).forEach(addTarget);
+        var best = null;
+        targets.forEach(function (t) {
+          var pick = pickBest(candidatesFor(p, t), p);
+          if (pick && (!best || pick.strength > best.strength)) best = pick;
+        });
+        if (best) {
+          rels.push(best.edge);
+          added.push(best.edge);
+          recompute();
+          progress = true;
+        }
+      });
+    }
+    return added;
+  }
+
   global.Kinship = {
     TYPE_GROUPS: TYPE_GROUPS,
     TERMS: TERMS,
@@ -783,6 +1006,10 @@
     displayTitle: displayTitle,
     mutual: mutual,
     aliasOf: function (label) { return aliasFor(label, null); },
-    namesOf: namesOf
+    namesOf: namesOf,
+    rankOf: rankOf,
+    baseTitle: baseTitle,
+    matchStrength: matchStrength,
+    buildRelations: buildRelations
   };
 })(typeof window !== 'undefined' ? window : globalThis);

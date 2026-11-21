@@ -8,7 +8,7 @@
     <title>亲属关系地图</title>
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🗺️</text></svg>">
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.70" />
+    <link rel="stylesheet" href="style.css?v=1.75" />
 
     <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
     <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
@@ -133,7 +133,7 @@
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.7 · 构建 1.70（清除所有数据：区域/地点/称谓/关系）</span>
+                <span class="version">v2.7 · 构建 1.75（自动补齐关系网 · 同辈按排行定长幼与排序）</span>
 
             </div>
         </div>
@@ -159,7 +159,7 @@
                     <label class="label">这个地点的称谓条目</label>
                     <div id="placeTitleRows"></div>
                     <button type="button" class="btn-add-title" data-act="addPlaceTitleRow">+ 添加称谓条目</button>
-                    <div class="label-tip">一个条目 = 一个称谓：称谓条目就是这个地点里的人（如 爷爷 / 奶奶 / 我）；第 1 行填称谓名，第 2 行选性别、年龄；每行左侧的 ＋ 把该称谓设为「我」（默认第一人）；行下方可展开推算出的称谓与互称</div>
+                    <div class="label-tip">一个条目 = 一个称谓：称谓条目就是这个地点里的人（如 爷爷 / 奶奶 / 我）；称谓、性别、年龄在同一行填写；每行左侧的 ＋ 把该称谓设为「我」（默认第一人）；行下方可展开推算出的称谓与互称</div>
                 </div>
 
                 <div class="modal-buttons">
@@ -220,7 +220,8 @@
                     <span class="graph-root-tag">我：</span>
                     <select id="graphRootSelect" aria-label="选择任意人物作为「我」（称谓推算起点）"></select>
                 </label>
-                <span class="graph-hint">悬停高亮路径 · 点击定位</span>
+                <button type="button" class="graph-fill" data-act="autoFillRelations" title="按每个人的称谓自动反推关系边（只新增，不改动已有关系）；同辈按名字前的排行定长幼与左右顺序">补齐关系网</button>
+                <span class="graph-hint">族谱式：代际自上而下 · 悬停高亮路径 · 点击定位</span>
                 <button type="button" class="close-btn" data-act="closeGraph" aria-label="关闭关系图">×</button>
             </div>
             <div class="graph-body" id="graphBody"></div>
@@ -240,11 +241,12 @@
     </div>
 
     <!-- defer 保持相对顺序；事件均经 app.js 的事件委托分发（见 ACTIONS），无内联 handler -->
-    <script defer src="config.js?v=1.70"></script>
+    <script defer src="config.js?v=1.75"></script>
     <script defer src="geocode.js?v=1.21"></script>
-    <script defer src="kinship.js?v=1.70"></script>
-    <script defer src="tilecache.js?v=1.70"></script>
-    <script defer src="places.js?v=1.70"></script>
-    <script defer src="app.js?v=1.70"></script>
+    <script defer src="kinship.js?v=1.75"></script>
+    <script defer src="tilecache.js?v=1.75"></script>
+    <script defer src="places.js?v=1.75"></script>
+    <script defer src="graphlayout.js?v=1.75"></script>
+    <script defer src="app.js?v=1.75"></script>
 </body>
 </html>

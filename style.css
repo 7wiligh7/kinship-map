@@ -554,37 +554,40 @@ button:focus-visible, [role="button"]:focus-visible {
 .kin-path { font-size: 12px; color: #999; }
 
 /* 地点编辑器里的称谓条目表（一个条目 = 一个称谓）：
-   第 1 行 ＋|称谓名|×（名字独占整行宽度，手机上不被挤没），
-   第 2 行 性别|年龄，第 3 行可展开推算称谓与互称 */
+   同一行 ＋ | 称谓名 | 性别 | 年龄 | ×，
+   下一行可展开推算称谓与互称 */
 .place-title-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 58px 46px 24px;
+    gap: 4px;
     align-items: center;
     margin-bottom: 6px;
 }
 
-/* 名字与两侧按钮同排：.input 自带 width:100%，这里必须把 flex-basis 归零，
-   否则基准宽度撑满整行，＋ 和 × 会被挤到各自单独一行 */
-.place-title-row .pt-name { flex: 1 1 0; width: auto; min-width: 0; }
-
-/* 第 2 行：性别 + 年龄，强制换到下一行、各占一半 */
-.pt-meta {
-    flex: 1 0 100%;
-    display: flex;
-    gap: 6px;
+/* 称谓名占剩余宽度；minmax(0,1fr) 允许它收缩，不把后面的性别/年龄/× 挤走 */
+.place-title-row .pt-name {
+    width: 100%;
+    min-width: 0;
+    padding: 8px;
 }
-.pt-meta .pt-gender { flex: 1 1 50%; min-width: 0; }
-.pt-meta .pt-age { flex: 1 1 50%; min-width: 0; }
+
+/* 性别、年龄用紧凑内边距，保证 300px 宽的弹窗里五个控件同排 */
+.place-title-row .pt-gender,
+.place-title-row .pt-age {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 2px;
+    font-size: 13px;
+}
+.place-title-row .pt-age { padding: 8px 4px; }
 
 /* 行下方：推算出的称谓与互称（折叠，点开看） */
-.pt-kin-wrap { flex: 1 0 100%; }
+.pt-kin-wrap { grid-column: 1 / -1; }
 .pt-kin-wrap summary { font-size: 12px; color: #2b6cb0; cursor: pointer; user-select: none; }
 .pt-kin { margin-top: 4px; margin-bottom: 0; font-size: 12px; }
 
 /* 称谓条目左侧的 ＋：把这行设为「我」（选中后填充绿色） */
 .pt-me {
-    flex: 0 0 24px;
     width: 24px;
     height: 24px;
     border: 1px solid #cfe3cf;
@@ -875,6 +878,20 @@ button:focus-visible, [role="button"]:focus-visible {
 
 .graph-root-pick select:focus { outline: 2px solid #4a7fd4; outline-offset: 1px; }
 
+/* 图表头「补齐关系网」按钮：按称谓反推关系边，只新增不改动已有关系 */
+.graph-fill {
+    flex: none;
+    border: 1px solid #4a7fd4;
+    background: #0f3460;
+    color: #a0c4ff;
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.graph-fill:hover { background: #1a4a86; color: #fff; }
+
 .graph-hint { font-size: 12px; color: #8892b0; }
 
 .graph-header .close-btn { color: #ccc; }
@@ -895,32 +912,61 @@ button:focus-visible, [role="button"]:focus-visible {
 .graph-svg { display: block; margin: 0 auto; }
 
 .g-edge {
+    fill: none;
     stroke: #4a5568;
     stroke-width: 1.5;
 }
 
+/* 父母→子女的下垂线与兄弟横杆 */
+.g-edge-descent { stroke: #5c6f8a; stroke-width: 1.6; }
+
+/* 夫妻婚线：横在两人名框之间 */
+.g-edge-spouse { stroke: #a78bfa; stroke-width: 2.2; }
+
 .g-edge.hl { stroke: #f6e05e; stroke-width: 3; }
 
-.g-edge-label {
-    fill: #a0aec0;
+/* 世系参考线（每世一条，压得很淡） */
+.g-gen-tick {
+    stroke: rgba(160, 174, 192, 0.14);
+    stroke-width: 1;
+    stroke-dasharray: 2 7;
+}
+
+.g-gen-label {
+    fill: #7f8ea8;
     font-size: 11px;
+    letter-spacing: 1px;
+}
+
+.g-gen-label.root { fill: #ffb4a2; font-weight: bold; }
+
+.g-gen-me { fill: #ff8a80; font-size: 10px; }
+
+/* 关系字：深色描边打底，即使压在线或名框边缘也能看清 */
+.g-edge-label {
+    fill: #b6c2d4;
+    font-size: 11px;
+    paint-order: stroke;
+    stroke: #1a1a2e;
+    stroke-width: 4px;
+    stroke-linejoin: round;
 }
 
 .g-edge-label.hl { fill: #f6e05e; font-weight: bold; }
 
 .g-node { cursor: pointer; }
 
-.g-node circle {
+.g-node rect {
     fill: #2d3748;
     stroke: #718096;
     stroke-width: 2;
 }
 
-.g-node.root circle { fill: #d32f2f; stroke: #ff8a80; }
+.g-node.root rect { fill: #8e2b2b; stroke: #ff8a80; }
 
-.g-node.hl circle { stroke: #f6e05e; stroke-width: 3; }
+.g-node.hl rect { stroke: #f6e05e; stroke-width: 3; }
 
-.g-node:hover circle { stroke: #a0c4ff; }
+.g-node:hover rect { stroke: #a0c4ff; }
 
 .g-node-name {
     fill: white;

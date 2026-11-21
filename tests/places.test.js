@@ -32,15 +32,15 @@ ok(pl1 && pl1.regionId === 'r1', '迁移后地点继承区域归属');
 /* ---------- 1b. 迁移时按「称谓」更新人物信息 ---------- */
 var withTitles = Places.normalize({
     persons: [
-        { id: 'x1', name: '13', gender: 'm', age: 60, titles: ['13公', '13婆', '朋叔', '苗姑', '欠姑'], lat: 31.1, lng: 111.1 },
+        { id: 'x1', name: '23', gender: 'm', age: 60, titles: ['23公', '23婆', '表叔', '秀姑', '干姑'], lat: 31.1, lng: 111.1 },
         { id: 'x2', name: '李四', gender: '', age: null, titles: [], lat: 31.2, lng: 111.2 }
     ],
     relations: []
 });
-ok(withTitles.persons[0].name === '13公', '迁移后条目名取第一个手填称谓（实际 ' + withTitles.persons[0].name + '）');
+ok(withTitles.persons[0].name === '23公', '迁移后条目名取第一个手填称谓（实际 ' + withTitles.persons[0].name + '）');
 ok(withTitles.persons[0].titles.length === 5, '其余手填称谓原样保留（别人对同一个人的不同叫法）');
 ok(withTitles.persons[1].name === '李四', '没有称谓时保留原姓名');
-ok(withTitles.places[0].name === '13', '地点名用原数据的人物名');
+ok(withTitles.places[0].name === '23', '地点名用原数据的人物名');
 ok(withTitles.migratedFrom && withTitles.migratedFrom.places === 2 && withTitles.migratedFrom.people === 2,
     '迁移统计写入 migratedFrom（给界面提示用）');
 
@@ -142,8 +142,8 @@ ok(Places.personLabel(d9, 'a') === 'A 家 · 爷爷', '人物标签带地点名'
 var d10 = Places.normalize({
     places: [{ id: 'pl1', name: '爷爷家', lat: 31, lng: 111 }],
     persons: [
-        { id: 'x1', name: '13公', gender: 'm', age: 60, titles: ['13公', '13婆', '朋叔'], placeId: 'pl1' },
-        { id: 'x2', name: '苗姑', placeId: 'pl1' },
+        { id: 'x1', name: '23公', gender: 'm', age: 60, titles: ['23公', '23婆', '表叔'], placeId: 'pl1' },
+        { id: 'x2', name: '秀姑', placeId: 'pl1' },
         { id: 'x3', name: '老太爷', titles: ['太爷爷'] } // 未挂地点：没有条目可承载，保留数据
     ],
     relations: [{ from: 'x2', to: 'x1', type: '姑姑' }]
@@ -152,7 +152,7 @@ var added10 = Places.splitHandFilledTitles(d10);
 ok(added10 === 2, '每个手填称谓各建一条、同名已存在不重建（期望 2 实际 ' + added10 + '）');
 ok(Places.peopleCount(d10, 'pl1') === 4, '地点条目 2 → 4（实际 ' + Places.peopleCount(d10, 'pl1') + '）');
 ok(d10.titlesSplit === 2, 'titlesSplit 进度标记已写入 2（实际 ' + d10.titlesSplit + '）');
-var np13 = d10.persons.filter(function (p) { return p.name === '13婆'; })[0];
+var np13 = d10.persons.filter(function (p) { return p.name === '23婆'; })[0];
 ok(!!np13 && np13.placeId === 'pl1', '新条目挂在同一地点');
 ok(np13 && np13.gender === '' && np13.age === null && np13.titles.length === 0, '新条目性别/年龄留空、不带 titles');
 ok(d10.persons.filter(function (p) { return p.id === 'x1'; })[0].titles.length === 0, '原条目拆完清空其他称谓（一个条目一个称谓）');
@@ -160,7 +160,7 @@ ok(d10.persons.filter(function (p) { return p.id === 'x3'; })[0].titles.length =
 ok(d10.relations.length === 1, '已有关系不动');
 ok(Places.splitHandFilledTitles(d10) === 0, '再次调用不再拆（标记生效）');
 Places.removePerson(d10, np13.id);
-ok(Places.splitHandFilledTitles(d10) === 0 && !d10.persons.some(function (p) { return p.name === '13婆'; }),
+ok(Places.splitHandFilledTitles(d10) === 0 && !d10.persons.some(function (p) { return p.name === '23婆'; }),
     '删掉拆出的条目不会被复活');
 var d10b = Places.normalize(JSON.parse(JSON.stringify(d10)));
 ok(d10b.titlesSplit === 2, 'titlesSplit 经存盘/规范化往返仍在');
@@ -169,8 +169,8 @@ ok(d10b.titlesSplit === 2, 'titlesSplit 经存盘/规范化往返仍在');
 var d10c = Places.normalize({
     places: [{ id: 'pl1', name: '爷爷家', lat: 31, lng: 111 }],
     persons: [
-        { id: 'y1', name: '13公', titles: ['13婆', '朋叔'], placeId: 'pl1' },
-        { id: 'y2', name: '13婆', placeId: 'pl1' } // v1.67 已拆出的条目
+        { id: 'y1', name: '23公', titles: ['23婆', '表叔'], placeId: 'pl1' },
+        { id: 'y2', name: '23婆', placeId: 'pl1' } // v1.67 已拆出的条目
     ],
     relations: [],
     titlesSplit: true

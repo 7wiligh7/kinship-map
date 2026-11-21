@@ -8,6 +8,11 @@ function eq(got, want, msg) {
     else { fail++; console.log('FAIL: ' + msg + ' | got=' + JSON.stringify(got) + ' want=' + JSON.stringify(want)); }
 }
 
+function ok(cond, msg) {
+    if (cond) { pass++; }
+    else { fail++; console.log('FAIL: ' + msg); }
+}
+
 function L(out, id) { var l = out.labels[id]; return l ? l.label : null; }
 function EX(out, id) { var l = out.labels[id]; return l ? !!l.exact : null; }
 function GEN(out, id) { var l = out.labels[id]; return l ? l.gen : null; }
@@ -390,6 +395,123 @@ var comp = K.compute('me', CP2, CR2);
 eq(L(comp, 'bo'), '伯父/叔父', '只记了侄子：我叫他 = 伯父/叔父（长幼未知）');
 eq(L(comp, 'gf'), '爷爷', '复合称谓继续往上推 = 爷爷，不断链');
 eq(EX(comp, 'gf'), true, '复合称谓后面的链仍是正名');
+
+/* ===== 直接填祖辈/孙辈关系：代际差是 ±2，不能算成 ±1 ===== */
+var GP = [
+    { id: 'me', gender: 'm' },
+    { id: 'son', gender: 'm' },
+    { id: 'gs', gender: 'm' }, { id: 'gd', gender: 'f' },
+    { id: 'ws', gender: 'm' }, { id: 'wd', gender: 'f' },
+    { id: 'co', gender: 'm' },
+    { id: 'gf', gender: 'm' }, { id: 'gm', gender: 'f' },
+    { id: 'mgf', gender: 'm' }, { id: 'mgm', gender: 'f' }
+];
+var GR = [
+    { from: 'son', to: 'me', type: '儿子' },
+    { from: 'gs', to: 'me', type: '孙子' },
+    { from: 'gd', to: 'me', type: '孙女' },
+    { from: 'ws', to: 'me', type: '外孙' },
+    { from: 'wd', to: 'me', type: '外孙女' },
+    { from: 'co', to: 'gs', type: '堂兄弟' },
+    { from: 'gf', to: 'me', type: '爷爷' },
+    { from: 'gm', to: 'me', type: '奶奶' },
+    { from: 'mgf', to: 'me', type: '外公' },
+    { from: 'mgm', to: 'me', type: '外婆' }
+];
+var gp = K.compute('me', GP, GR);
+eq(GEN(gp, 'son'), 1, '直接「儿子」仍是下一辈 +1');
+eq(GEN(gp, 'gs'), 2, '直接「孙子」是下两辈 +2（修复前误为 +1）');
+eq(GEN(gp, 'gd'), 2, '直接「孙女」是下两辈 +2');
+eq(GEN(gp, 'ws'), 2, '直接「外孙」是下两辈 +2');
+eq(GEN(gp, 'wd'), 2, '直接「外孙女」是下两辈 +2');
+eq(GEN(gp, 'co'), 2, '孙子的堂哥与孙子同辈 +2');
+eq(GEN(gp, 'gf'), -2, '直接「爷爷」是上两辈 -2（修复前误为 -1）');
+eq(GEN(gp, 'gm'), -2, '直接「奶奶」是上两辈 -2');
+eq(GEN(gp, 'mgf'), -2, '直接「外公」是上两辈 -2');
+eq(GEN(gp, 'mgm'), -2, '直接「外婆」是上两辈 -2');
+
+// 反着录入也要一致：我是爷爷的孙子 / 我是孙子的爷爷
+var rev2 = K.compute('me', [
+    { id: 'me', gender: 'm' }, { id: 'gf', gender: 'm' }
+], [{ from: 'me', to: 'gf', type: '孙子' }]);
+eq(GEN(rev2, 'gf'), -2, '反着录入「我是爷爷的孙子」：爷爷 gen -2');
+var rev3 = K.compute('gs', [
+    { id: 'gs', gender: 'm' }, { id: 'me', gender: 'm' }
+], [{ from: 'me', to: 'gs', type: '爷爷' }]);
+eq(GEN(rev3, 'me'), -2, '反着录入「我是孙子的爷爷」：爷爷 gen -2');
+
+/* ---------- 反向建网：排行、称谓匹配、自动补齐关系网 ---------- */
+
+eq(K.rankOf('23公'), 23, '阿拉伯数字排行');
+eq(K.rankOf('十五姨'), 15, '中文数字排行 十五');
+eq(K.rankOf('廿三叔'), 23, '中文数字排行 廿三');
+eq(K.rankOf('二丫'), null, '「二丫」不是排行（中文数字须含十/廿/卅）');
+eq(K.rankOf('23'), null, '纯数字名字不算排行');
+eq(K.baseTitle('23公'), '公', '去掉排行前缀');
+eq(K.baseTitle('秀姑'), '秀姑', '没有排行前缀就不动');
+
+eq(K.matchStrength('爷爷', '爷爷'), 3, '完全一致 = 3');
+eq(K.matchStrength('爷爷', '阿公'), 2, '俗称一致 = 2');
+eq(K.matchStrength('爷爷', '公'), 1, '前后缀近似 = 1');
+eq(K.matchStrength('父亲', '爸爸'), 2, '父亲 ↔ 爸爸 俗称匹配');
+eq(K.matchStrength('姑姑', '秀姑') > 0, true, '「秀姑」尾字兜底能匹配姑姑');
+eq(K.matchStrength('奶奶', '老公'), 0, '「老公」不该匹配奶奶');
+
+// 零关系起步：只有相对「我」的称谓，反推出全部关系边
+var bp = [
+    { id: 'me', name: '我', gender: 'm' },
+    { id: 'fa', name: '爸爸', gender: 'm' },
+    { id: 'gf', name: '爷爷', gender: 'm' },
+    { id: 'gm', name: '奶奶', gender: 'f' },
+    { id: 'gz', name: '曾祖父', gender: 'm' },
+    { id: 'str', name: '张三' }   // 猜不出的保持未连通
+];
+var bOrig = [];
+var br = K.buildRelations(bp, bOrig, 'me');
+eq(br.length, 4, '补齐 4 条关系（张三猜不出，实际 ' + br.length + '）');
+eq(bOrig.length, 0, '传入的关系数组不被改动');
+var bout = K.compute('me', bp, br);
+eq(L(bout, 'fa'), '父亲', '爸爸反推出「父亲」');
+eq(GEN(bout, 'fa'), -1, '爸爸 gen -1');
+eq(L(bout, 'gf'), '爷爷', '爷爷反推出「爷爷」');
+eq(GEN(bout, 'gf'), -2, '爷爷 gen -2');
+eq(L(bout, 'gm'), '奶奶', '奶奶反推出「奶奶」');
+eq(L(bout, 'gz'), '曾祖父', '曾祖父挂在爷爷下反推');
+eq(GEN(bout, 'gz'), -3, '曾祖父 gen -3');
+eq(L(bout, 'str'), null, '张三仍未连通');
+var gfEdge = br.filter(function (r) { return r.from === 'gf'; })[0];
+ok(!!gfEdge && gfEdge.to === 'fa' && gfEdge.type === '父亲',
+    '爷爷应挂到爸爸下面（世系线更正）：' + JSON.stringify(gfEdge));
+eq(K.buildRelations(bp, br, 'me').length, 0, '再次调用没有可补的（幂等）');
+
+// 已有关系的只补缺的
+var cp = [
+    { id: 'me3', name: '我' }, { id: 'fa3', name: '爸爸' }, { id: 'gf3', name: '爷爷' }
+];
+var cOrig = [{ from: 'fa3', to: 'me3', type: '父亲' }];
+var cr = K.buildRelations(cp, cOrig, 'me3');
+eq(cr.length, 1, '只补缺的一条');
+eq(cr[0].from, 'gf3', '缺的是爷爷');
+eq(cOrig.length, 1, '已有关系不被改动');
+
+// 排行定长幼：舅舅挂妈妈下，13 > 12 是弟弟，11 < 12 是哥哥
+var jp = [
+    { id: 'me2', name: '我', gender: 'f' },
+    { id: 'mo2', name: '15妈', gender: 'f' },
+    { id: 'j1', name: '16舅', gender: 'm' },
+    { id: 'j2', name: '14舅', gender: 'm' }
+];
+var jr = K.buildRelations(jp, [], 'me2');
+eq(jr.length, 3, '妈妈 + 两个舅舅共 3 条');
+var e1 = jr.filter(function (r) { return r.from === 'j1'; })[0];
+var e2 = jr.filter(function (r) { return r.from === 'j2'; })[0];
+ok(!!e1 && e1.to === 'mo2' && e1.type === '弟弟',
+    '16舅 排行大于 15妈 → 弟弟：' + JSON.stringify(e1));
+ok(!!e2 && e2.to === 'mo2' && e2.type === '哥哥',
+    '14舅 排行小于 15妈 → 哥哥：' + JSON.stringify(e2));
+var jout = K.compute('me2', jp, jr);
+eq(L(jout, 'j1'), '舅舅', '16舅的称谓仍是舅舅');
+eq(GEN(jout, 'j1'), -1, '舅舅 gen -1');
 
 console.log('pass=' + pass + ' fail=' + fail);
 process.exit(fail ? 1 : 0);
