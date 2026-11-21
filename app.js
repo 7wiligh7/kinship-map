@@ -2443,6 +2443,7 @@ function savePlaceDraft(draft, regionId) {
     (draft.entries || []).forEach(function (e) {
         Places.addPerson(state.data, { name: e.name, gender: e.gender, age: e.age, placeId: pl.id, titles: [] });
     });
+    Places.splitCombinedNames(state.data); // 6公/婆 → 6公 + 6婆
     saveData();
     renderAll(false);
     markUserModified();
@@ -2472,6 +2473,7 @@ function syncPlaceEntries(placeId, entries) {
         p.gender = e.gender;
         p.age = e.age;
     });
+    Places.splitCombinedNames(state.data); // 6公/婆 → 6公 + 6婆（带排行前缀）
 }
 
 // 删除地点（连带其下人物与相关关系）

@@ -175,6 +175,53 @@ var Places = (function () {
         return added;
     }
 
+    /* ---------- 合写称谓拆分：6公/婆 → 6公 + 6婆（后半继承排行前缀） ---------- */
+
+    function genderOfSeg(seg) {
+        if (/[爹公叔伯爷舅哥弟]/.test(seg)) return 'm';
+        if (/[妈婆娘婶姨奶姐妹]/.test(seg)) return 'f';
+        return '';
+    }
+    // 取名字里的排行前缀：「6公」→「6」，「6婆」→「6」，「a爹」→「a」，没有则空
+    function rankPrefix(name) {
+        var m = /^(\d+|[〇零一二三四五六七八九十廿卅两]+|[a-zA-Z]+)/.exec(String(name || '').trim());
+        return m ? m[1] : '';
+    }
+    function splitCombinedNames(d) {
+        if (!d || !Array.isArray(d.persons)) return 0;
+        var added = 0;
+        d.persons.slice().forEach(function (p) {
+            if (!p || typeof p.name !== 'string' || p.name.indexOf('/') < 0) return;
+            var segs = p.name.split('/').map(function (s) { return s.trim(); }).filter(Boolean);
+            if (segs.length < 2) return;
+            var prefix = rankPrefix(segs[0]);
+            p.name = segs[0];
+            if (!p.gender) p.gender = genderOfSeg(segs[0]);
+            var prev = p;
+            for (var si = 1; si < segs.length; si++) {
+                // 后半段继承排行前缀：婆 → 6婆
+                var seg = segs[si];
+                var hasPrefix = rankPrefix(seg);
+                var fullName = hasPrefix ? seg : (prefix + seg);
+                var np = addPerson(d, {
+                    name: fullName, gender: genderOfSeg(fullName), age: null,
+                    titles: [], placeId: p.placeId
+                });
+                d.relations = d.relations || [];
+                // 相邻异性段建配偶关系
+                if (np.gender && prev.gender && np.gender !== prev.gender) {
+                    var exists = d.relations.some(function (r) {
+                        return (r.from === prev.id && r.to === np.id) || (r.from === np.id && r.to === prev.id);
+                    });
+                    if (!exists) d.relations.push({ from: prev.id, to: np.id, type: '配偶' });
+                }
+                prev = np;
+                added++;
+            }
+        });
+        return added;
+    }
+
     /* ---------- 规范化 + 迁移 ---------- */
 
     function normalize(d, opts) {
@@ -259,40 +306,9 @@ var Places = (function () {
         // 迁移来的地点人物坐标已归地点；清掉人物坐标避免两处打架
         d.persons.forEach(function (p) { p.lat = null; p.lng = null; });
 
-        // 合写称谓拆分：名字含「/」的（如 5爹/妈、公/婆）按段拆成多个人。
-        // 第一段沿用原人（保留 id/rootId/现有关系），其余段新建；相邻异性段之间自动建配偶关系。
-        // 幂等：只拆名字里还含「/」的人。
-        function genderOfWord(seg) {
-            if (/[爹公叔伯爷舅哥弟]/.test(seg)) return 'm';
-            if (/[妈婆娘婶姨奶姐妹]/.test(seg)) return 'f';
-            return '';
-        }
-        var splitPairs = [];
-        d.persons.slice().forEach(function (p) {
-            if (typeof p.name !== 'string' || p.name.indexOf('/') < 0) return;
-            var segs = p.name.split('/').map(function (s) { return s.trim(); }).filter(Boolean);
-            if (segs.length < 2) return;
-            p.name = segs[0];
-            if (!p.gender) p.gender = genderOfWord(segs[0]);
-            var prev = p;
-            for (var si = 1; si < segs.length; si++) {
-                var np = addPerson(d, {
-                    name: segs[si], gender: genderOfWord(segs[si]), age: null,
-                    titles: [], placeId: p.placeId
-                });
-                splitPairs.push([prev, np]);
-                prev = np;
-            }
-        });
-        // 拆出的相邻段若一男一女，自动建配偶关系（5爹↔5妈、公↔婆）
-        splitPairs.forEach(function (pair) {
-            var a = pair[0], b = pair[1];
-            if (!a.gender || !b.gender || a.gender === b.gender) return;
-            var exists = (d.relations || []).some(function (r) {
-                return (r.from === a.id && r.to === b.id) || (r.from === b.id && r.to === a.id);
-            });
-            if (!exists) d.relations.push({ from: a.id, to: b.id, type: '配偶' });
-        });
+        // 合写称谓拆分（加载/保存都会调用）：名字含「/」的（如 6公/婆、5爹/妈）按段拆成多个人。
+        // 后半段继承前半段的排行前缀（6公/婆 → 6公 + 6婆）。
+        splitCombinedNames(d);
 
         var ids = {};
         d.persons.forEach(function (p) { ids[p.id] = true; });
@@ -323,6 +339,7 @@ var Places = (function () {
         addPlace: addPlace,
         addPerson: addPerson,
         removePerson: removePerson,
+        splitCombinedNames: splitCombinedNames,
         removePlace: removePlace,
         effectiveRootId: effectiveRootId,
         movePerson: movePerson,

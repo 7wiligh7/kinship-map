@@ -348,5 +348,18 @@ ok(a1 && c1 && Math.abs(a1.r - c1.r) < 1, '同辈（15公/三婆）应在同一�
 ok(b1 && a1 && Math.abs(angDeg(b1) - angDeg(a1)) > 30,
     '不同地点应分占不同扇区（实际角度差 ' + Math.abs(angDeg(b1) - angDeg(a1)).toFixed(0) + '°）');
 
+// 没有同地点关系边时，树仍按地点内辈分显现（不依赖跨地点关系）
+var treeP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'tgf', name: '爷爷', gender: 'm', age: null, titles: [], placeId: 'pT' },
+    { id: 'tfa', name: '爸爸', gender: 'm', age: null, titles: [], placeId: 'pT' },
+    { id: 'tu', name: '叔叔', gender: 'm', age: null, titles: [], placeId: 'pT' }
+];
+var treeG = radialPlaced(treeP, [], 'me'); // 无任何关系边
+var tgf = nodeOfG(treeG, 'tgf'), tfa = nodeOfG(treeG, 'tfa'), tfa2 = nodeOfG(treeG, 'tu');
+ok(tgf && tfa && tgf.r < tfa.r, '无关系边时树仍按辈分分层：爷爷(根)在内圈、爸爸在外圈');
+ok(tfa && tfa2 && Math.abs(tfa.r - tfa2.r) < 1, '同辈（爸爸/叔叔）在同一环');
+ok(treeG.edges.some(function (e) { return e.kind === 'kin' && e.title === '爷爷'; }), '地点根（爷爷）仍连到「我」');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

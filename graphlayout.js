@@ -27,8 +27,10 @@ var GraphLayout = (function () {
     // 返回相对「我」的代数偏移：公/婆=祖辈(-2)、爹/叔/姑/妈/娘/娘=父辈(-1)；认不出返回 null。
     function nameGenOffset(name) {
         var s = String(name == null ? '' : name);
-        if (/公|婆|公婆/.test(s)) return -2;
-        if (/爹|叔|姑|妈|娘|婶|姨|舅/.test(s)) return -1;
+        // 祖辈（上两代）
+        if (/(爷爷|奶奶|外公|外婆|祖父|祖母|公|婆|大爷|大婆)/.test(s)) return -2;
+        // 父辈（上一代）
+        if (/(爸爸|妈妈|父亲|母亲|爹|叔|姑|妈|娘|婶|姨|舅|伯)/.test(s)) return -1;
         return null;
     }
 
@@ -1403,7 +1405,9 @@ var GraphLayout = (function () {
                 return males[0] || ids.slice().sort(function (a, b) { return genOf(a) - genOf(b) || info[a].order - info[b].order; })[0];
             }
 
-            // 3) 每组内建树（同组内按 adj BFS，长辈优先）+ 权重
+            // 3) 每组内按「辈分」建父子链（不依赖跨地点关系）：
+            //    最高辈为根；其他人挂到同地点里 gen 比自己高一层的长辈（排行靠前者优先），
+            //    没有恰好高一辈的就往上找最近的长辈，都没有挂到根。这样树状结构只由地点内辈分决定。
             var groupRoots = {};
             var pTreeParent = {};
             var pTreeChildren = {};
@@ -1420,33 +1424,27 @@ var GraphLayout = (function () {
                 var root = pickRoot(ids);
                 groupRoots[key] = root;
                 placeRoots.push(root);
-                var idSet = {};
-                ids.forEach(function (id) { idSet[id] = true; });
-                var visited = {};
-                visited[root] = true;
-                var q = [root], h = 0;
-                while (h < q.length) {
-                    var cur = q[h++];
-                    var nbrs = (adj[cur] || []).slice().filter(function (e) { return idSet[e.id] && !visited[e.id]; });
-                    nbrs.sort(function (a, b) {
-                        var ga = genOf(a.id), gb = genOf(b.id);
-                        if (ga !== gb) return ga - gb;      // 长辈优先当父
-                        return a.prio - b.prio || info[a.id].order - info[b.id].order;
+                // 其余人按 gen 从小到大（长辈先挂）排序
+                var rest = ids.filter(function (id) { return id !== root; }).sort(function (a, b) {
+                    return genOf(a) - genOf(b) || info[a].rank - info[b].rank || info[a].order - info[b].order;
+                });
+                var attached = {};
+                attached[root] = true;
+                rest.forEach(function (id) {
+                    var myGen = genOf(id);
+                    var cand = null;
+                    // 先找同地点里 gen 恰好比我小一辈、且已挂好的长辈
+                    var elders = ids.filter(function (e) {
+                        return attached[e] && genOf(e) < myGen;
+                    }).sort(function (a, b) {
+                        var da = myGen - genOf(a), db = myGen - genOf(b);
+                        if (da !== db) return da - db; // 优先恰好高一辈
+                        return (info[a].rank == null ? 999 : info[a].rank) - (info[b].rank == null ? 999 : info[b].rank) || info[a].order - info[b].order;
                     });
-                    nbrs.forEach(function (e) {
-                        if (visited[e.id]) return;
-                        visited[e.id] = true;
-                        pTreeParent[e.id] = cur;
-                        (pTreeChildren[cur] = pTreeChildren[cur] || []).push(e.id);
-                        q.push(e.id);
-                    });
-                }
-                // 没被 BFS 覆盖的同组人，挂到根
-                ids.forEach(function (id) {
-                    if (!visited[id]) {
-                        pTreeParent[id] = root;
-                        (pTreeChildren[root] = pTreeChildren[root] || []).push(id);
-                    }
+                    cand = elders[0] || root;
+                    pTreeParent[id] = cand;
+                    (pTreeChildren[cand] = pTreeChildren[cand] || []).push(id);
+                    attached[id] = true;
                 });
                 pCalcW(root);
             });

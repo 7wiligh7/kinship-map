@@ -202,20 +202,20 @@ var combo = Places.normalize({
     ],
     relations: [], rootId: 'cme', regions: [], activeRegionId: null
 });
-var c5p = Places.findPerson(combo, 'c5');
-var cMa = combo.persons.filter(function (p) { return p.name === '妈'; })[0];
-var cGong = Places.findPerson(combo, 'cgp');
+var c5p = combo.persons.filter(function (p) { return p.name === '5爹'; })[0];
+var cMa = combo.persons.filter(function (p) { return p.name === '5妈'; })[0];
+var cGong = combo.persons.filter(function (p) { return p.name === '公'; })[0];
 var cPo = combo.persons.filter(function (p) { return p.name === '婆'; })[0];
-ok(!!c5p && c5p.name === '5爹' && c5p.gender === 'm', '5爹/妈 拆出 5爹（男，保留排行前缀）');
-ok(!!cMa && cMa.gender === 'f', '拆出 妈（女）');
-ok(!!cGong && cGong.name === '公' && cGong.gender === 'm', '公/婆 拆出 公（男）');
+ok(!!c5p && c5p.gender === 'm', '5爹/妈 拆出 5爹（男）');
+ok(!!cMa && cMa.gender === 'f', '拆出 5妈（女，后半继承排行前缀）');
+ok(!!cGong && cGong.gender === 'm', '公/婆 拆出 公（男）');
 ok(!!cPo && cPo.gender === 'f', '拆出 婆（女）');
 function spouseExists(a, b) {
     return combo.relations.some(function (r) {
         return r.type === '配偶' && ((r.from === a.id && r.to === b.id) || (r.from === b.id && r.to === a.id));
     });
 }
-ok(c5p && cMa && spouseExists(c5p, cMa), '5爹 与 妈 自动建配偶关系');
+ok(c5p && cMa && spouseExists(c5p, cMa), '5爹 与 5妈 自动建配偶关系');
 ok(cGong && cPo && spouseExists(cGong, cPo), '公 与 婆 自动建配偶关系');
 ok(combo.rootId === undefined, '合写拆分不再保留 rootId');
 var comboCount = combo.persons.length;
