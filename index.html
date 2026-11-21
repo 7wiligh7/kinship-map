@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>亲属关系地图</title>
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=1.15" />
+    <link rel="stylesheet" href="style.css?v=1.38" />
+    <!-- 瓦片源预连接：提前完成 DNS + TLS，首屏少等 100~300ms -->
+    <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin />
+    <link rel="dns-prefetch" href="https://server.arcgisonline.com" />
     <script src="vendor/leaflet/leaflet.js"></script>
 </head>
 <body>
@@ -19,7 +22,7 @@
                 <input class="ws-input" id="wsPlaceInput" placeholder="主要居住地（可选，如：李家村）" maxlength="30" onkeydown="if(event.key==='Enter') searchNewWsPlace()" />
                 <div class="ws-place-row">
                     <button class="btn-cancel" onclick="searchNewWsPlace()">搜索位置</button>
-                    <span class="ws-place-hint" id="wsPlaceHint">选好后创建档案，会自动建成第一个区域</span>
+                    <span class="ws-place-hint" id="wsPlaceHint">选好后进地图会定位到那里，不会自动建区</span>
                 </div>
                 <div class="ws-place-results" id="wsPlaceResults"></div>
                 <div class="ws-emoji-row" id="wsEmojiRow">
@@ -85,11 +88,13 @@
                 <div class="region-current" id="regionCurrent">未划定</div>
                 <div class="region-list" id="regionList"></div>
                 <div class="place-search">
-                    <input class="place-input" id="placeInput" placeholder="地名，或「纬度,经度」" onkeydown="if (event.key === 'Enter') searchPlaces()" />
+                    <input class="place-input" id="placeInput" placeholder="地名 / 纬度,经度 / 粘贴拾取坐标" onkeydown="if (event.key === 'Enter') searchPlaces()" />
                     <button class="place-btn" onclick="searchPlaces()">搜索</button>
+                    <button class="place-btn key-btn" onclick="openKeySettings()" title="搜索源设置（高德/天地图 key，免费）">⚙</button>
                 </div>
                 <div class="place-results" id="placeResults"></div>
                 <button class="region-add" onclick="startDrawRegion()">＋ 地图上框选新区域</button>
+                <button class="region-add offline-add" onclick="offlineRegionDialog()" title="把当前区域的瓦片下到本地，之后进这个区域不用联网">⤓ 缓存本区离线图</button>
             </div>
 
             <div class="sidebar-menu">
@@ -120,7 +125,7 @@
             </div>
 
             <div class="sidebar-footer">
-                <span class="version">v2.0</span>
+                <span class="version">v2.3 · 构建 1.38（切档清搜索·可删最后区域）</span>
             </div>
         </div>
 
@@ -239,8 +244,9 @@
         <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="handleImport(this)" />
     </div>
 
-    <script src="config.js?v=1.18"></script>
+    <script src="config.js?v=1.38"></script>
+    <script src="geocode.js?v=1.21"></script>
     <script src="kinship.js"></script>
-    <script src="app.js?v=1.18"></script>
+    <script src="app.js?v=1.38"></script>
 </body>
 </html>

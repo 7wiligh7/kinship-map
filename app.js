@@ -14,7 +14,11 @@ var state = {
     markerLayer: null,
     regionLayer: null,
     selectedId: null,
-    editingId: null
+    editingId: null,
+    // 首屏视野就位前不建瓦片层：否则会先按默认中心下一屏无用的瓦片
+    tilesReady: false,
+    // 搜索定位到当前区域外时临时解锁平移硬墙（回到区域内自动恢复）
+    previewOutside: false
 };
 
 var draw = {
@@ -142,6 +146,13 @@ function pointInPolygon(pt, poly) {
     return inside;
 }
 
+// 多边形中心（顶点平均），用于在区域框里放名字标签
+function polyCenter(poly) {
+    var la = 0, ln = 0;
+    poly.forEach(function (v) { la += v[0]; ln += v[1]; });
+    return [la / poly.length, ln / poly.length];
+}
+
 function boxAround(pts, pad) {
     var minLa = 90, maxLa = -90, minLn = 180, maxLn = -180;
     pts.forEach(function (p) {
@@ -260,21 +271,27 @@ function searchNewWsPlace() {
     var q = input.value.trim();
     if (!q) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="place-empty">搜索中…</div>';
-    geocode(q).then(function (list) {
+    geocode(q, showNewWsResults).then(function (list) {
         if (!list || !list.length) {
             box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」</div>';
             return;
         }
-        state._newWsPlaces = list;
-        box.innerHTML = list.map(function (r, i) {
-            return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
-                '<span class="place-name">' + esc(r.name) + '</span>' +
-                (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
-                '</div>';
-        }).join('');
+        showNewWsResults(list);
     }).catch(function () {
-        box.innerHTML = '<div class="place-empty">搜索失败：网络不可达<br>可在 config.js 填高德 key，或直接输入「纬度,经度」</div>';
+        box.innerHTML = '<div class="place-empty">联网搜不到（地名服务连不上）。<br>' +
+            '可直接输入「纬度,经度」；或先创建档案，进地图后点选位置。</div>';
     });
+}
+
+function showNewWsResults(list) {
+    state._newWsPlaces = list;
+    document.getElementById('wsPlaceResults').innerHTML = list.map(function (r, i) {
+        return '<div class="place-item" onclick="pickNewWsPlace(' + i + ')">' +
+            (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
+            '<span class="place-name">' + esc(r.name) + '</span>' +
+            (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
+            '</div>';
+    }).join('');
 }
 
 function pickNewWsPlace(i) {
@@ -291,7 +308,7 @@ function hideCreateForm() {
     document.getElementById('wsNameInput').value = '';
     document.getElementById('wsPlaceInput').value = '';
     document.getElementById('wsPlaceResults').innerHTML = '';
-    document.getElementById('wsPlaceHint').textContent = '选好后创建档案，会自动建成第一个区域';
+    document.getElementById('wsPlaceHint').textContent = '选好后进地图会定位到那里，不会自动建区';
     state._newWsPlace = null;
     state._newWsPlaces = null;
 }
@@ -315,27 +332,20 @@ function createWorkspace() {
     var pendingPlace = state._newWsPlace;
     hideCreateForm();
     enterWorkspace(ws.id);
-    // 建档时选过居住地 → 自动建成第一个区域（演示数据自带区域，不覆盖）
+    // 建档时选过居住地：只把地图定位过去，不自动建区（建区仍由用户框选/点选决定）
     if (pendingPlace && state.data && !state.data.regions.length) {
-        var poly = placePolygon(pendingPlace);
-        if (poly) {
-            var km = spanKmOf(poly);
-            if (km <= CONFIG.REGION_MAX_SPAN_KM) {
-                addRegionFromPlace(pendingPlace.name || name, poly);
-            } else {
-                var rName = pendingPlace.name || name;
-                showDialog({
-                    title: '区域跨度超出建议上限',
-                    body: '<div class="dialog-note">「' + esc(rName) + '」的涵盖范围约 ' + Math.round(km) + ' km，超过建议上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km。<br/>' +
-                        '建议搜索更具体的地名（如村/镇），或进档案后手绘框选。仍要创建吗？</div>',
-                    buttons: [
-                        { label: '不创建' },
-                        { label: '仍创建', cls: 'primary', onClick: function () { addRegionFromPlace(rName, poly); } }
-                    ]
-                });
-            }
-        }
+        // 延后一拍：等地图首次布局/尺寸就绪，避免被初始视野覆盖
+        setTimeout(function () { focusWsPlace(pendingPlace); }, 60);
     }
+}
+
+// 新建档案后把地图移到"主要居住地"，仅定位、不建区域
+function focusWsPlace(place) {
+    if (!map || !place) return;
+    var lat = Number(place.lat), lng = Number(place.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return;
+    map.setView([lat, lng], 16, { animate: false });
+    toast('已定位到「' + (place.name || '所选位置') + '」。要建区域：侧栏「＋ 地图上框选新区域」', 5000);
 }
 
 function deleteWorkspace(id) {
@@ -349,13 +359,41 @@ function deleteWorkspace(id) {
     toast('已删除档案');
 }
 
+// 切换档案：把上一个档案的瞬时状态清干净，避免痕迹带进新档案
+function resetWorkspaceUI() {
+    // 人名搜索：输入框 + 下拉结果
+    var box = document.getElementById('searchResults');
+    if (box) { box.classList.remove('show'); box.innerHTML = ''; }
+    var si = document.getElementById('searchInput');
+    if (si) si.value = '';
+    // 地名搜索：输入框 + 结果 + 结果缓存（否则点旧结果会飞到上一个档案的位置）
+    var pi = document.getElementById('placeInput');
+    if (pi) pi.value = '';
+    var pr = document.getElementById('placeResults');
+    if (pr) pr.innerHTML = '';
+    state._placeResults = null;
+    // 上一个档案的人物信息卡 / 选中态 / 关系表单
+    closeInfoCard();
+    hideRelForm();
+    state.selectedId = null;
+    state.editingId = null;
+    hideContextMenu();
+    // 上一个档案没走完的交互（添加人物、框选区域、待放置的人物草稿）
+    addMode = false;
+    pendingLatLng = null;
+    pendingDraft = null;
+    if (draw.active) cleanupDraw();
+}
+
 function enterWorkspace(id) {
     var list = getWsList();
     var ws = list.filter(function (w) { return w.id === id; })[0];
     if (!ws) return;
+    state.tilesReady = false; /* 等视野适配到当前区域后再建瓦片 */
     state.workspace = ws;
     state.isDemo = !!ws.demo;
     state.data = loadWs(id) || freshV3();
+    resetWorkspaceUI();
     document.getElementById('startup').classList.add('hidden');
     document.getElementById('wsBarEmoji').textContent = ws.emoji || '🏡';
     document.getElementById('wsBarName').textContent = ws.name;
@@ -368,6 +406,8 @@ function enterWorkspace(id) {
     renderRegions();
     renderAll(false);
     fitActiveRegion();
+    state.tilesReady = true;
+    syncTileBounds(); /* 视野就位后再建瓦片层：首屏不浪费一屏瓦片 */
 }
 
 /* ===== data layer (v1/v2/v3 normalize) ===== */
@@ -450,9 +490,12 @@ function normalizeData(d) {
     }).map(function (r) {
         return { id: String(r.id), name: typeof r.name === 'string' && r.name ? r.name : '未命名区域', polygon: r.polygon };
     });
-    if (!d.regions.length && d.persons.length) {
+    if (!d.regions.length && d.persons.length && d.regionsCleared !== true) {
+        // 旧格式（v1/v2 导入）没有区域字段，按人物位置补一个默认区域；
+        // v3 里用户手动删光区域时会置 regionsCleared=true，这里不能再"长"回去。
         d.regions = [synthRegion(d.persons)];
     }
+    d.regionsCleared = d.regions.length === 0 && d.regionsCleared === true;
     var rids = {};
     d.regions.forEach(function (r) { rids[r.id] = true; });
     var fallbackRid = d.activeRegionId && rids[d.activeRegionId] ? d.activeRegionId : (d.regions[0] ? d.regions[0].id : null);
@@ -463,8 +506,6 @@ function normalizeData(d) {
     d.version = 3;
     return d;
 }
-
-function loadData() { return state.data; }
 
 /* ===== map ===== */
 
@@ -482,15 +523,17 @@ function initMap() {
     if (CONFIG.TILE.LOCAL) {
         state.tileDefs.push({
             url: CONFIG.TILE.LOCAL,
-            opts: { minZoom: CONFIG.MIN_ZOOM, maxZoom: CONFIG.MAX_ZOOM, zIndex: 0 }
+            // 这里只存「附加项」，真正的瓦片尺寸/层级在 buildTiles() 时按当前缩放决定
+            opts: { minZoom: CONFIG.MIN_ZOOM, zIndex: 0 }
         });
     }
     state.tileDefs.push({
         url: CONFIG.TILE.NETWORK,
-        opts: { maxZoom: CONFIG.MAX_ZOOM, attribution: CONFIG.TILE.ATTRIBUTION }
+        opts: { attribution: CONFIG.TILE.ATTRIBUTION }
     });
+    // 瓦片层不在这里创建：等 enterWorkspace() 把视野适配到当前区域后再建，
+    // 否则会先按 CONFIG.CENTER 下一屏无用的瓦片，随后又被丢弃。
     state._tileKey = null;
-    buildTiles();
     state.markerLayer = L.layerGroup().addTo(map);
     state.regionLayer = L.layerGroup().addTo(map);
     map.on('click', function (e) {
@@ -502,6 +545,32 @@ function initMap() {
     });
     map.on('dblclick', function () {
         if (draw.active) finishRegion();
+    });
+    // 缩放/平移停下后，空闲预取下一级瓦片
+    map.on('zoomend', function () {
+        if (!state.tilesReady) return;
+        schedulePrefetch();
+    });
+    map.on('moveend', function () {
+        schedulePrefetch();
+        // 定位过程中会先触发 stop() 的 moveend（此时仍在旧位置），要忽略它；
+        // 只有地图真正到达定位目标后的那次 moveend 才继续往下判断
+        if (state._locating) {
+            var t = state._locateTarget;
+            var c = map.getCenter();
+            var atTarget = !!(t && Math.abs(c.lat - t.lat) < 1e-6 && Math.abs(c.lng - t.lng) < 1e-6);
+            if (!atTarget) return;
+            state._locating = false;
+            state._locateTarget = null;
+        }
+        // 搜索定位到区域外后，一旦把地图拖回区域范围，就恢复平移硬墙与缩放下限
+        if (state.previewOutside) {
+            var rb = regionBounds();
+            if (rb && rb.contains(map.getCenter())) {
+                state.previewOutside = false;
+                syncMapPan();
+            }
+        }
     });
     map.on('contextmenu', function (e) {
         if (draw.active || !addMode) return;
@@ -543,7 +612,7 @@ function regionTileBounds() {
 function syncMapPan() {
     if (!map) return;
     var b = regionBounds();
-    if (b) {
+    if (b && !state.previewOutside) {
         // 平移硬墙比缩放下限所需范围再放宽两圈：
         // 最小缩放时视野可能比区域大，边界太紧会让拖动被反复弹回。
         var panB = b.pad(2);
@@ -563,19 +632,419 @@ function syncMapPan() {
     }
 }
 
+/* ===== tile loading: 选项 / 本地缓存 / 图层 ===== */
+
+// 瓦片层选项（网络层与本地层共用，单个图层可再覆盖）
+// 统一使用 256px 原生瓦片：所有缩放级别都是同一套影像，不会出现"换级换图"。
+function tileOpts(extra) {
+    var o = {
+        maxZoom: CONFIG.MAX_ZOOM,
+        // 超过该级就放大低一级的瓦片，不再向服务器要图
+        maxNativeZoom: CONFIG.TILE.MAX_NATIVE_ZOOM || CONFIG.MAX_ZOOM,
+        // 视口外多留几圈瓦片：拖动时更少空白
+        keepBuffer: CONFIG.TILE.KEEP_BUFFER != null ? CONFIG.TILE.KEEP_BUFFER : 2,
+        // 停下后再请求，拖拽途中不狂发请求
+        updateWhenIdle: CONFIG.TILE.UPDATE_WHEN_IDLE !== false,
+        // 失败时用 1×1 透明图占位，避免破图标
+        errorTileUrl: CONFIG.TILE.ERROR_TILE,
+        // Esri 没有 @2x 瓦片，开启只会拿 404
+        detectRetina: false,
+        tileSize: 256
+    };
+    Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+    return o;
+}
+
+// 瓦片落盘缓存（IndexedDB）。
+// 键 = 瓦片 URL，值 = { blob, used }；超过 CACHE_MAX 片时按最久未用淘汰。
+// 取不到/不可用（隐私模式、file:// 受限）时静默降级为纯网络加载。
+var TileCache = (function () {
+    var DB_NAME = 'kinmap_tiles';
+    var STORE = 'tiles';
+    var MAX = CONFIG.TILE.CACHE_MAX || 6000;
+    var enabled = CONFIG.TILE.CACHE !== false &&
+        typeof indexedDB !== 'undefined' && !!window.indexedDB;
+    var dbPromise = null;
+    var writes = 0;
+
+    function openDb() {
+        if (!enabled) return Promise.reject(new Error('cache disabled'));
+        if (dbPromise) return dbPromise;
+        dbPromise = new Promise(function (resolve, reject) {
+            var req;
+            try { req = indexedDB.open(DB_NAME, 1); } catch (e) { reject(e); return; }
+            req.onupgradeneeded = function () {
+                var db = req.result;
+                if (!db.objectStoreNames.contains(STORE)) {
+                    var os = db.createObjectStore(STORE);
+                    os.createIndex('used', 'used');
+                }
+            };
+            req.onsuccess = function () { resolve(req.result); };
+            req.onerror = function () { reject(req.error || new Error('idb error')); };
+            req.onblocked = function () { reject(new Error('idb blocked')); };
+        });
+        return dbPromise;
+    }
+
+    function store(mode) {
+        return openDb().then(function (db) {
+            return db.transaction(STORE, mode).objectStore(STORE);
+        });
+    }
+
+    function get(url) {
+        if (!enabled) return Promise.resolve(null);
+        return store('readonly').then(function (os) {
+            return new Promise(function (resolve) {
+                var req = os.get(url);
+                req.onsuccess = function () { resolve(req.result || null); };
+                req.onerror = function () { resolve(null); };
+            });
+        }).catch(function () { return null; });
+    }
+
+    function put(url, blob) {
+        if (!enabled) return;
+        store('readwrite').then(function (os) {
+            os.put({ blob: blob, used: Date.now() }, url);
+        }).catch(function () {});
+        if (++writes % 200 === 0) prune();
+    }
+
+    // 预热：已缓存就跳过，否则后台下载并落盘（用于预取放大后要用的瓦片）
+    function warm(url) {
+        if (!enabled) return;
+        get(url).then(function (rec) {
+            if (rec && rec.blob) return;
+            fetch(url, { mode: 'cors', credentials: 'omit' })
+                .then(function (res) { return res.ok ? res.blob() : null; })
+                .then(function (blob) { if (blob) put(url, blob); })
+                .catch(function () {});
+        });
+    }
+
+    // 粗粒度清理：保留最近使用的约 70%
+    function prune() {
+        store('readwrite').then(function (os) {
+            var countReq = os.count();
+            countReq.onsuccess = function () {
+                var total = countReq.result;
+                if (total <= MAX) return;
+                var drop = total - Math.floor(MAX * 0.7);
+                var cursorReq = os.index('used').openCursor();
+                cursorReq.onsuccess = function () {
+                    var cur = cursorReq.result;
+                    if (!cur || drop <= 0) return;
+                    cur.delete();
+                    drop--;
+                    cur.continue();
+                };
+            };
+        }).catch(function () {});
+    }
+
+    return { available: enabled, get: get, put: put, warm: warm };
+})();
+
+// 带缓存的瓦片层：先查 IndexedDB，未命中再 fetch 网络并回写。
+// 同一区域第二次打开、反复拖动都不再走网络；断网也能显示看过的范围。
+var CachedTileLayer = L.TileLayer.extend({
+    createTile: function (coords, done) {
+        var tile = document.createElement('img');
+        var self = this;
+        var url = this.getTileUrl(coords);
+        var settled = false;
+
+        function finish() {
+            if (settled) return;
+            settled = true;
+            done(null, tile);
+        }
+
+        function showBlob(blob) {
+            var objUrl = URL.createObjectURL(blob);
+            tile.onload = function () {
+                URL.revokeObjectURL(objUrl);
+                finish();
+            };
+            tile.onerror = function () {
+                URL.revokeObjectURL(objUrl);
+                directImg(); /* 缓存图解码失败，退回直连 */
+            };
+            tile.src = objUrl;
+        }
+
+        // 兜底：直接用 <img> 加载（不受 CORS 限制，file:// 打开也能用）。
+        // 缓存不可用、fetch 被拦、blob 解码失败时都走这里。
+        function directImg() {
+            tile.onload = function () { finish(); };
+            tile.onerror = function () {
+                if (self.options.errorTileUrl) tile.src = self.options.errorTileUrl;
+                finish();
+            };
+            tile.src = url;
+        }
+
+        function fromNetwork() {
+            fetch(url, { mode: 'cors', credentials: 'omit' })
+                .then(function (res) {
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.blob();
+                })
+                .then(function (blob) {
+                    TileCache.put(url, blob);
+                    showBlob(blob);
+                })
+                .catch(directImg);
+        }
+
+        tile.alt = '';
+        tile.setAttribute('role', 'presentation');
+        if (!TileCache.available) {
+            fromNetwork();
+            return tile;
+        }
+        TileCache.get(url).then(function (rec) {
+            if (rec && rec.blob) showBlob(rec.blob);
+            else fromNetwork();
+        });
+        return tile;
+    }
+});
+
 function buildTiles() {
     if (!map || !state.tileDefs) return;
     var b = regionTileBounds();
     state.tileDefs.forEach(function (d) {
-        if (d.layer) {
-            map.removeLayer(d.layer);
-            d.layer = null;
-        }
-        var opts = {};
-        Object.keys(d.opts).forEach(function (k) { opts[k] = d.opts[k]; });
+        var old = d.layer;
+        var opts = tileOpts(d.opts);
         if (b) opts.bounds = b;
-        d.layer = L.tileLayer(d.url, opts).addTo(map);
+        var layer = new CachedTileLayer(d.url, opts);
+        d.layer = layer;
+        layer.addTo(map);
+        // 平滑换层：新层先叠上去，等它出图后再移除旧层，避免缩放/切区时白屏
+        if (old) {
+            var dropped = false;
+            var drop = function () {
+                if (dropped) return;
+                dropped = true;
+                map.removeLayer(old);
+            };
+            layer.once('load', drop);
+            layer.once('tileload', function () { setTimeout(drop, 600); });
+            setTimeout(drop, 3000); /* 兜底：网络再慢也不能一直挂着 */
+        }
     });
+}
+
+/* ===== 区域离线包：把当前区域的瓦片一次性下到本地 ===== */
+
+function tileRangeForBounds(bounds, z) {
+    var nw = map.project(bounds.getNorthWest(), z);
+    var se = map.project(bounds.getSouthEast(), z);
+    var max = Math.pow(2, z) - 1;
+    var x0 = Math.max(0, Math.floor(nw.x / 256));
+    var x1 = Math.min(max, Math.floor(se.x / 256));
+    var y0 = Math.max(0, Math.floor(nw.y / 256));
+    var y1 = Math.min(max, Math.floor(se.y / 256));
+    return {
+        x0: x0, x1: x1, y0: y0, y1: y1,
+        count: Math.max(0, x1 - x0 + 1) * Math.max(0, y1 - y0 + 1)
+    };
+}
+
+function offlineBaseBounds() {
+    var r = activeRegion();
+    if (!r || !r.polygon || r.polygon.length < 3) return null;
+    return L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND);
+}
+
+// 估算：从当前最小缩放级开始逐级累加，超过预算就停
+function offlinePlan() {
+    var b = offlineBaseBounds();
+    if (!b || !map) return null;
+    var cfg = CONFIG.TILE.OFFLINE || {};
+    var budget = cfg.MAX_TILES || 2500;
+    var z0 = Math.max(0, Math.floor(map.getMinZoom()));
+    var z1 = CONFIG.MAX_ZOOM;
+    var levels = [], total = 0;
+    for (var z = z0; z <= z1; z++) {
+        var t = tileRangeForBounds(b, z);
+        if (!t.count) continue;
+        if (total + t.count > budget && levels.length) break;
+        levels.push({ z: z, count: t.count });
+        total += t.count;
+    }
+    if (!levels.length) return null;
+    return {
+        levels: levels,
+        total: total,
+        firstZ: levels[0].z,
+        lastZ: levels[levels.length - 1].z,
+        mb: total * (cfg.AVG_TILE_KB || 12) / 1024
+    };
+}
+
+function offlineRegionDialog() {
+    if (!state.data) return;
+    var plan = offlinePlan();
+    if (!plan) { toast('先划定一个区域，再缓存离线图'); return; }
+    var r = activeRegion();
+    showDialog({
+        title: '缓存本区离线图',
+        body: '<div class="dialog-note">区域：<b>' + esc(r.name) + '</b><br>' +
+            '范围：' + plan.firstZ + ' ~ ' + plan.lastZ + ' 级，共 <b>' + plan.total + '</b> 片，约 <b>' + plan.mb.toFixed(1) + ' MB</b><br>' +
+            (plan.lastZ < CONFIG.MAX_ZOOM
+                ? '更高层级（' + (plan.lastZ + 1) + ' ~ ' + CONFIG.MAX_ZOOM + '）仍会联网加载。<br>'
+                : '整区在你的缩放范围内都能离线看。<br>') +
+            '下载后进入这个区域 0 次网络请求，断网也能用。</div>',
+        buttons: [
+            { label: '取消' },
+            { label: '开始下载', cls: 'primary', onClick: function () { downloadOfflinePlan(plan); } }
+        ]
+    });
+}
+
+function cancelOffline() {
+    state._offlineCancel = true;
+    hideDialog();
+    toast('已停止，已下载的部分仍然可用');
+}
+
+function downloadOfflinePlan(plan) {
+    var d = state.tileDefs && state.tileDefs[state.tileDefs.length - 1];
+    var b = offlineBaseBounds();
+    if (!d || !d.url || !b) return;
+    var cfg = CONFIG.TILE.OFFLINE || {};
+    var conc = Math.max(1, cfg.CONCURRENCY || 4);
+
+    var urls = [];
+    plan.levels.forEach(function (lv) {
+        var t = tileRangeForBounds(b, lv.z);
+        for (var x = t.x0; x <= t.x1; x++) {
+            for (var y = t.y0; y <= t.y1; y++) urls.push(tileUrlFor(d.url, lv.z, x, y));
+        }
+    });
+    if (!urls.length) { toast('这个区域没有可缓存的瓦片'); return; }
+
+    showDialog({
+        title: '正在缓存离线图',
+        body: '<div class="offline-prog" id="offlineProg">准备中…</div>' +
+            '<div class="offline-bar"><i id="offlineBar"></i></div>' +
+            '<div class="dialog-note" style="margin-top:8px">可以关掉这个窗口去别处，下载会继续。</div>',
+        buttons: [{ label: '停止', onClick: cancelOffline }]
+    });
+
+    var total = urls.length, done = 0, failed = 0, bytes = 0, i = 0, finished = false;
+    state._offlineCancel = false;
+
+    function render() {
+        var prog = document.getElementById('offlineProg');
+        var bar = document.getElementById('offlineBar');
+        if (prog) {
+            prog.textContent = '已下载 ' + done + ' / ' + total +
+                '（约 ' + (bytes / 1048576).toFixed(1) + ' MB）' +
+                (failed ? '　失败 ' + failed : '');
+        }
+        if (bar) bar.style.width = Math.round(done / total * 100) + '%';
+    }
+    render();
+
+    function finish() {
+        if (finished) return;
+        finished = true;
+        if (state._offlineCancel) return; /* 取消时已经提示过 */
+        hideDialog();
+        var ok = done - failed;
+        toast('离线图已缓存：' + ok + ' 片，约 ' + (bytes / 1048576).toFixed(1) + ' MB' +
+            (failed ? '（' + failed + ' 片失败，可再点一次补齐）' : ''), 5000);
+    }
+
+    function next() {
+        if (finished || state._offlineCancel) return;
+        if (i >= urls.length) return; /* 全部发出去了，等最后一个完成再收尾 */
+        var url = urls[i++];
+
+        function step() {
+            done++;
+            render();
+            if (done >= total) finish();
+            else next();
+        }
+
+        TileCache.get(url).then(function (rec) {
+            if (rec && rec.blob) {
+                bytes += rec.blob.size || 0;
+                step();
+                return;
+            }
+            var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 15000) : null;
+            fetch(url, { mode: 'cors', credentials: 'omit', signal: ctrl ? ctrl.signal : undefined })
+                .then(function (res) { return res.ok ? res.blob() : null; })
+                .then(function (blob) {
+                    if (blob) { TileCache.put(url, blob); bytes += blob.size || 0; }
+                    else failed++;
+                })
+                .catch(function () { failed++; })
+                .then(function () {
+                    if (timer) clearTimeout(timer);
+                    step();
+                });
+        }).catch(function () {
+            failed++;
+            step();
+        });
+    }
+
+    for (var k = 0; k < conc; k++) next();
+}
+
+/* ===== 区域离线包 end ===== */
+
+/* 空闲预取：把"放大一级要用的大瓦片"提前下到本地缓存，下次缩放直接出图 */
+
+var prefetchTimer = null;
+
+function schedulePrefetch() {
+    if (CONFIG.TILE.PREFETCH === false) return;
+    if (prefetchTimer) clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(prefetchNextLevel, 800);
+}
+
+function tileUrlFor(tpl, z, x, y) {
+    return String(tpl).replace('{z}', z).replace('{x}', x).replace('{y}', y);
+}
+
+function prefetchNextLevel() {
+    if (!map || !state.tileDefs || !state.tileDefs.length) return;
+    if (!TileCache.available) return;
+    var d = state.tileDefs[state.tileDefs.length - 1];
+    if (!d || !d.url) return;
+    var nextZ = map.getZoom() + 1;
+    if (nextZ > CONFIG.MAX_ZOOM) return;
+    // 统一 256px 瓦片：下一级就是 nativeZ
+    var nativeZ = nextZ;
+    if (nativeZ < 0) return;
+    var nw, se;
+    try {
+        var bounds = map.getBounds();
+        nw = map.project(bounds.getNorthWest(), nativeZ);
+        se = map.project(bounds.getSouthEast(), nativeZ);
+    } catch (e) { return; }
+    var max = Math.pow(2, nativeZ) - 1;
+    var x0 = Math.max(0, Math.floor(nw.x / 256));
+    var x1 = Math.min(max, Math.floor(se.x / 256));
+    var y0 = Math.max(0, Math.floor(nw.y / 256));
+    var y1 = Math.min(max, Math.floor(se.y / 256));
+    var n = 0;
+    for (var x = x0; x <= x1 && n < 24; x++) {
+        for (var y = y0; y <= y1 && n < 24; y++) {
+            TileCache.warm(tileUrlFor(d.url, nativeZ, x, y));
+            n++;
+        }
+    }
 }
 
 function syncTileBounds() {
@@ -587,7 +1056,7 @@ function syncTileBounds() {
     } else {
         key = r.id + '|' + r.polygon.length + '|' + r.polygon[0][0].toFixed(5) + ',' + r.polygon[0][1].toFixed(5);
     }
-    if (key !== state._tileKey) {
+    if (key !== state._tileKey && state.tilesReady !== false) {
         state._tileKey = key;
         buildTiles();
     }
@@ -614,6 +1083,7 @@ function fitActiveRegion() {
 // 否则这里算出的远景会被后面的 minZoom 强制拉近，配置项形同虚设。
 function fitRegion(r) {
     if (!map || !r || !r.polygon || r.polygon.length < 3) return;
+    state.previewOutside = false; /* 换了/新建了区域：恢复该区域的平移与缩放限制 */
     map.fitBounds(L.latLngBounds(r.polygon).pad(CONFIG.VIEW.EXPAND), {
         padding: CONFIG.VIEW.PADDING,
         animate: false
@@ -629,9 +1099,10 @@ function fitData(force) {
         if (p.lat != null && p.lng != null) pts.push([p.lat, p.lng]);
     });
     if (pts.length) {
-        map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: CONFIG.VIEW.MAX_ZOOM });
+        // 不用动画：初始视野要立刻到位，否则后续 setView 会被动画回调覆盖
+        map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: CONFIG.VIEW.MAX_ZOOM, animate: false });
     } else if (force) {
-        map.setView(CONFIG.CENTER, CONFIG.VIEW.MAX_ZOOM);
+        map.setView(CONFIG.CENTER, CONFIG.VIEW.MAX_ZOOM, { animate: false });
     }
 }
 
@@ -672,7 +1143,7 @@ function renderRegions() {
     list.innerHTML = (state.data ? state.data.regions : []).map(function (r) {
         return '<div class="region-item' + (r.id === state.data.activeRegionId ? ' active' : '') + '" onclick="switchRegion(\'' + esc(r.id) + '\')">' +
             '<span class="region-item-name">' + esc(r.name) + '</span>' +
-            (state.data.regions.length > 1 ? '<button class="region-item-del" title="删除区域" onclick="event.stopPropagation(); deleteRegion(\'' + esc(r.id) + '\')">✕</button>' : '') +
+            '<button class="region-item-del" title="删除区域" onclick="event.stopPropagation(); deleteRegion(\'' + esc(r.id) + '\')">✕</button>' +
             '</div>';
     }).join('');
     if (state.regionLayer) {
@@ -687,6 +1158,17 @@ function renderRegions() {
                 fillColor: '#d32f2f',
                 fillOpacity: 0.04,
                 interactive: false
+            }).addTo(state.regionLayer);
+            // 区域名标签：让人一眼看出这个红框是"已有区域"，不是搜索结果
+            L.marker(polyCenter(r.polygon), {
+                interactive: false,
+                keyboard: false,
+                icon: L.divIcon({
+                    className: 'region-label-anchor',
+                    html: '<span class="map-region-label' + (isActive ? ' active' : '') + '">' +
+                        esc(r.name) + '</span>',
+                    iconSize: [0, 0]
+                })
             }).addTo(state.regionLayer);
         });
     }
@@ -706,21 +1188,27 @@ function switchRegion(id) {
 }
 
 function deleteRegion(id) {
-    if (state.data.regions.length <= 1) { toast('至少保留一个区域'); return; }
     var r = state.data.regions.filter(function (x) { return x.id === id; })[0];
     if (!r) return;
-    if (!confirm('删除区域「' + r.name + '」？区域内的人物将归入其他区域。')) return;
+    var isLast = state.data.regions.length === 1;
+    if (!confirm(isLast
+        ? '删除区域「' + r.name + '」？这是最后一个区域：删除后地图上不再显示区域框，人物仍保留在档案里，随时可以重新框选。'
+        : '删除区域「' + r.name + '」？区域内的人物将归入其他区域。')) return;
     state.data.regions = state.data.regions.filter(function (x) { return x.id !== id; });
-    var newActive = state.data.activeRegionId === id ? state.data.regions[0].id : state.data.activeRegionId;
+    var newActive = state.data.activeRegionId === id
+        ? (state.data.regions[0] ? state.data.regions[0].id : null)
+        : state.data.activeRegionId;
     state.data.persons.forEach(function (p) {
         if (p.regionId === id) p.regionId = newActive;
     });
     state.data.activeRegionId = newActive;
+    // 最后一个区域删完要留痕：否则重开页面时 normalizeData 会按人物位置自动"长"回一个区域
+    state.data.regionsCleared = state.data.regions.length === 0;
     saveData();
     renderRegions();
     renderAll(false);
     fitActiveRegion();
-    toast('已删除区域');
+    toast(isLast ? '已删除区域（地图上已无区域框）' : '已删除区域');
 }
 
 function startDrawRegion() {
@@ -822,6 +1310,7 @@ function createRegion(name, verts) {
     cleanupDraw();
     state.data.regions.push(region);
     state.data.activeRegionId = region.id;
+    state.data.regionsCleared = false; /* 重新框了区域，撤销"已删光区域"标记 */
     saveData();
     renderRegions();
     fitRegion(region);
@@ -918,62 +1407,282 @@ function searchPlaces() {
     var box = document.getElementById('placeResults');
     if (!q) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="place-empty">搜索中…</div>';
-    geocode(q).then(function (list) {
+    geocode(q, showPlaceResults).then(function (list) {
         if (!list || !list.length) {
-            box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」</div>';
+            box.innerHTML = '<div class="place-empty">没有找到「' + esc(q) + '」<br>' +
+                '可以写全一点（如「星子镇 连州」），或直接在地图上点选位置。</div>';
             return;
         }
-        state._placeResults = list;
-        box.innerHTML = list.map(function (r, i) {
-            return '<div class="place-item" onclick="createRegionFromPlace(' + i + ')">' +
-                '<span class="place-name">' + esc(r.name) + '</span>' +
-                (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
-                '<button class="place-loc" onclick="event.stopPropagation(); flyToPlace(' + i + ')" title="只把地图定位过去，不建区域">定位</button>' +
-                '</div>';
-        }).join('');
-    }).catch(function () {
-        box.innerHTML = '<div class="place-empty">搜索失败：网络不可达<br>可在 config.js 填高德 key，或直接输入「纬度,经度」</div>';
+        showPlaceResults(list);
+    }).catch(function (e) {
+        showPlaceError(e);
     });
 }
 
-function geocode(q) {
-    var coords = parseCoords(q);
-    if (coords) {
+// 搜索失败时给"能立刻用"的出口，而不是甩一堆超时信息给用户
+function showPlaceError(e) {
+    var msg = String((e && e.message) || '');
+    var netIssue = !!(e && e.noSource) || /超时|timeout|failed|不可达|network/i.test(msg);
+    var noResult = !netIssue && /无结果/.test(msg);
+    var box = document.getElementById('placeResults');
+    box.innerHTML =
+        '<div class="place-error">' +
+        '<div class="place-error-title">' +
+        (netIssue ? '联网搜索暂时用不了' : (noResult ? '没有找到这个地名' : '搜索没有成功')) +
+        '</div>' +
+        '<div class="place-error-detail">' +
+        (netIssue
+            ? '几个免 key 的地名服务在你这里都连不上（不影响已有数据）。换一种方式定位：'
+            : (noResult ? '换个写法试试（如「星子镇 连州」），或直接用下面的方式定位：' : esc(msg))) +
+        '</div>' +
+        '<div class="place-error-actions">' +
+        '<button class="place-act primary" onclick="startDrawRegion()">在地图上框选区域</button>' +
+        '<button class="place-act" onclick="hintCoords()">粘贴坐标</button>' +
+        '<button class="place-act" onclick="openKeySettings()">填 key</button>' +
+        '<button class="place-act" onclick="retryPlaceSearch()">重试</button>' +
+        '</div>' +
+        '<div class="place-error-foot">也可以直接用「＋ 地图上框选新区域」手动划定。</div>' +
+        '</div>';
+}
+
+function retryPlaceSearch() {
+    reviveSources(); /* 清掉"这些源暂时不可用"的记忆，再试一次 */
+    searchPlaces();
+}
+
+function hintCoords() {
+    var input = document.getElementById('placeInput');
+    input.focus();
+    input.select();
+    toast('输入「经度,纬度」如 112.56,24.99；高德拾取器复制的加 g: 前缀会自动纠偏', 5000);
+}
+
+function showPlaceResults(list) {
+    state._placeResults = list;
+    document.getElementById('placeResults').innerHTML = list.map(function (r, i) {
+        return '<div class="place-item" onclick="flyToPlace(' + i + ')" title="只把地图移到这个位置，不建区域">' +
+            (r.src ? '<span class="place-src">' + esc(r.src) + '</span>' : '') +
+            '<span class="place-name">' + esc(r.name) + '</span>' +
+            (r.address ? '<span class="place-addr">' + esc(r.address) + '</span>' : '') +
+            '</div>';
+    }).join('') +
+    '<div class="place-empty">点结果只定位，不建区域；要建区域请用「地图上框选新区域」。</div>';
+}
+
+/* 地名搜索：
+ * 1. 「纬度,经度」直输免网络；
+ * 2. 其余并行请求 CONFIG.GEOCODE.PROVIDERS 里的所有已配置源（填了 key 才算配置），
+ *    每个源出结果就合并渲染一次（快的源先显示），全部结束后 resolve 最终列表；
+ * 3. 串行 failover 的问题在于：国内 Esri 搜村名常「搜得出但不准」，会把后面更准的源挡住，
+ *    并行合并 + 相关度排序可以解决；总耗时约等于最慢的一个源。
+ */
+function geocode(q, onUpdate) {
+    var pc = Geocode.parseCoords(q);
+    if (pc) {
+        var lat = pc.lat, lng = pc.lng, addr = '';
+        if (pc.datum === 'gcj') {
+            var w = Geocode.gcj02ToWgs84(lng, lat);
+            lng = w[0]; lat = w[1];
+            addr = '高德/腾讯拾取坐标（GCJ-02 已自动纠偏）';
+        } else if (pc.datum === 'bd09') {
+            var g = Geocode.bd09ToGcj02(lng, lat);
+            var w2 = Geocode.gcj02ToWgs84(g[0], g[1]);
+            lng = w2[0]; lat = w2[1];
+            addr = '百度拾取坐标（BD-09 已自动纠偏）';
+        } else {
+            addr = pc.order === 'lnglat' ? '坐标（WGS-84，识别为「经度,纬度」顺序）' : '坐标点（免网络）';
+        }
         return Promise.resolve([{
-            name: coords[0].toFixed(5) + ', ' + coords[1].toFixed(5),
-            address: '坐标点（免网络）',
+            name: lat.toFixed(5) + ', ' + lng.toFixed(5),
+            address: addr,
             bbox: null,
-            lat: coords[0],
-            lng: coords[1]
+            lat: lat,
+            lng: lng,
+            src: '坐标'
         }]);
     }
     var list = providerList();
-    if (!list.length) return Promise.reject(new Error('no provider configured'));
-    var i = 0;
-    function next() {
-        if (i >= list.length) throw new Error('all providers failed');
-        var fn = list[i++];
-        return fn(q).then(function (res) {
-            return res && res.length ? res : next();
-        }, next);
+    if (!list.length) {
+        // 所有源都在「暂时连不上」名单里：立即失败，不再让用户等超时
+        var e0 = new Error('地名服务暂时不可用（刚连不上，20 分钟内不再自动尝试）');
+        e0.noSource = true;
+        return Promise.reject(e0);
     }
-    return next();
+    return new Promise(function (resolve, reject) {
+        var pending = list.length;
+        var groups = [];
+        var errs = [];
+        function publish() {
+            // 按配置顺序合并（而非完成顺序）：先返回的源不能霸占去重先手
+            var ordered = groups.slice().sort(function (a, b) { return a.idx - b.idx; });
+            var merged = Geocode.mergeGeoResults(q, ordered, (CONFIG.GEOCODE.LIMIT || 6) * 2);
+            if (onUpdate && merged.length) onUpdate(merged);
+            return merged;
+        }
+        list.forEach(function (p) {
+            p.fn(q).then(function (res) {
+                clearSourceFails(p.src);
+                if (res && res.length) groups.push({ src: p.src, list: res, idx: p.idx });
+                else errs.push(p.src + '：无结果');
+            }, function (e) {
+                noteSourceFail(p.src, e);
+                errs.push(p.src + '：' + (e && e.message ? e.message : '失败'));
+            }).then(function () {
+                pending--;
+                if (!pending) {
+                    if (!groups.length) reject(new Error(errs.join('；') || '全部搜索源无结果'));
+                    else resolve(publish());
+                } else if (groups.length) {
+                    publish();
+                }
+            });
+        });
+    });
 }
+
+var GEO_PROVIDERS = {
+    esri:      { src: 'Esri',  fn: geocodeEsri },
+    nominatim: { src: 'OSM',   fn: geocodeNominatim },
+    photon:    { src: 'Photon', fn: geocodePhoton },
+    amap:      { src: '高德',   fn: geocodeAmap, keyStore: 'amap' },
+    tianditu:  { src: '天地图', fn: geocodeTianditu, keyStore: 'tianditu' }
+};
 
 function providerList() {
-    var impls = { esri: geocodeEsri, nominatim: geocodeNominatim, amap: geocodeAmap };
     var names = (CONFIG.GEOCODE.PROVIDERS || ['esri']).slice();
-    if (CONFIG.GEOCODE.AMAP_KEY && names.indexOf('amap') < 0) names.push('amap');
-    return names.map(function (n) { return impls[n]; }).filter(Boolean);
+    // 填了 key（本机设置或 config.js）但没写进 PROVIDERS 的自动补到最前（兼容旧配置）
+    if (geoKey('amap') && names.indexOf('amap') < 0) names.unshift('amap');
+    if (geoKey('tianditu') && names.indexOf('tianditu') < 0) names.unshift('tianditu');
+    return names.map(function (n, i) {
+        var p = GEO_PROVIDERS[n];
+        if (!p) return null;
+        // idx = 配置顺序，合并去重时按它定优先级（完成顺序不可靠：慢的源未必准）
+        return { src: p.src, fn: p.fn, keyStore: p.keyStore, idx: i };
+    }).filter(Boolean).filter(function (p) {
+        if (p.keyStore && !geoKey(p.keyStore)) return false; // 没填 key 的源不参与
+        if (sourceUnreachable(p.src)) return false;          // 本会话连续失败被跳过的源不参与
+        return true;
+    });
 }
 
-function parseCoords(q) {
-    var m = String(q).match(/^\s*(-?\d+(?:\.\d+)?)\s*[,，\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
-    if (!m) return null;
-    var a = parseFloat(m[1]), b = parseFloat(m[2]);
-    if (isNaN(a) || isNaN(b)) return null;
-    if (Math.abs(a) > 90 || Math.abs(b) > 180) return null;
-    return [a, b];
+/* 国内网络下 nominatim 等源不可达，每次搜索都会白等一个超时。
+ * 同一源连续 2 次「超时/断网」类失败后，本会话内跳过该源；成功一次即恢复。刷新页面重置。 */
+function noteSourceFail(src, e) {
+    if (!e || (!e.timeout && !e.network)) return;
+    var m = state._geoFails || (state._geoFails = {});
+    m[src] = (m[src] || 0) + 1;
+    markSourceDead(src); /* 记到磁盘：刷新页面后也不用再白等超时 */
+}
+
+function clearSourceFails(src) {
+    if (state._geoFails) delete state._geoFails[src];
+    var m = geoDeadMap();
+    if (m[src]) {
+        delete m[src];
+        try { localStorage.setItem(GEO_DEAD_KEY, JSON.stringify(m)); } catch (e) {}
+    }
+}
+
+// 源连不上时记一笔（20 分钟内不再尝试），避免每次搜索都干等 5 秒
+var GEO_DEAD_KEY = 'kinmap_geo_dead';
+var GEO_DEAD_TTL = 20 * 60 * 1000;
+
+function geoDeadMap() {
+    try { return JSON.parse(localStorage.getItem(GEO_DEAD_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function markSourceDead(src) {
+    var m = geoDeadMap();
+    m[src] = Date.now() + GEO_DEAD_TTL;
+    try { localStorage.setItem(GEO_DEAD_KEY, JSON.stringify(m)); } catch (e) {}
+}
+
+// 「重试」按钮：清掉失败记忆，让所有源重新参与
+function reviveSources() {
+    try { localStorage.removeItem(GEO_DEAD_KEY); } catch (e) {}
+    state._geoFails = {};
+}
+
+function sourceUnreachable(src) {
+    var m = state._geoFails || {};
+    if ((m[src] || 0) >= 2) return true;
+    var d = geoDeadMap();
+    return !!(d[src] && d[src] > Date.now());
+}
+
+/* ===== 搜索源 key：应用内设置（存本机 localStorage，优先于 config.js） ===== */
+
+var GEO_KEY_LS = { amap: 'kinmap_amap_key', tianditu: 'kinmap_tdt_key' };
+
+function geoKey(which) {
+    var v = '';
+    try { v = localStorage.getItem(GEO_KEY_LS[which]) || ''; } catch (e) {}
+    if (!v) v = which === 'amap' ? CONFIG.GEOCODE.AMAP_KEY : CONFIG.GEOCODE.TIANDITU_KEY;
+    return String(v || '').trim();
+}
+
+function saveGeoKeys() {
+    var a = document.getElementById('setAmapKey');
+    var t = document.getElementById('setTdtKey');
+    if (!a || !t) return;
+    try {
+        var av = a.value.trim(), tv = t.value.trim();
+        if (av) localStorage.setItem(GEO_KEY_LS.amap, av); else localStorage.removeItem(GEO_KEY_LS.amap);
+        if (tv) localStorage.setItem(GEO_KEY_LS.tianditu, tv); else localStorage.removeItem(GEO_KEY_LS.tianditu);
+    } catch (e) {}
+    state._geoFails = {}; // key 变了，旧失败计数作废
+    toast('已保存（只存本浏览器）');
+}
+
+function clearGeoKeys() {
+    try {
+        localStorage.removeItem(GEO_KEY_LS.amap);
+        localStorage.removeItem(GEO_KEY_LS.tianditu);
+    } catch (e) {}
+    state._geoFails = {};
+    toast('已清除本机 key（config.js 里填的仍生效）');
+}
+
+function openKeySettings(msgHtml) {
+    showDialog({
+        title: '地名搜索源设置',
+        body:
+            '<div class="dialog-note">国内搜村/镇名，填一个 key 即可（个人免费）。<br>' +
+            '<b>高德</b>（推荐，村镇 POI 覆盖最好）：console.amap.com → 创建应用 → 添加 Key → 服务平台选「Web服务」<br>' +
+            '<b>天地图</b>（官方）：console.tianditu.gov.cn → 创建应用 → 类型选「浏览器端」<br>' +
+            'key 只存本浏览器 localStorage，不上传。</div>' +
+            '<div class="form-group"><label class="label">高德 key（Web服务类型）</label>' +
+            '<input class="input" id="setAmapKey" maxlength="64" autocomplete="off" placeholder="留空 = 只用免 key 源（Photon / Esri）" value="' + esc(geoKey('amap')) + '" /></div>' +
+            '<div class="form-group"><label class="label">天地图 tk（浏览器端类型）</label>' +
+            '<input class="input" id="setTdtKey" maxlength="64" autocomplete="off" placeholder="留空 = 只用免 key 源（Photon / Esri）" value="' + esc(geoKey('tianditu')) + '" /></div>' +
+            (msgHtml ? '<div class="key-test-msg">' + msgHtml + '</div>' : ''),
+        buttons: [
+            { label: '清除本机保存', onClick: clearGeoKeys },
+            { label: '保存', cls: 'primary', onClick: saveGeoKeys },
+            { label: '保存并测试', onClick: saveAndTestKeys }
+        ]
+    });
+}
+
+function saveAndTestKeys() {
+    saveGeoKeys();
+    var amapKey = geoKey('amap'), tdtKey = geoKey('tianditu');
+    if (!amapKey && !tdtKey) { openKeySettings('请先至少填一个 key'); return; }
+    openKeySettings('测试中…');
+    var jobs = [];
+    if (amapKey) {
+        jobs.push(geocodeAmap('北京市').then(
+            function (l) { return '高德：✓ 可用（「北京市」返回 ' + l.length + ' 条）'; },
+            function (e) { return '高德：✗ ' + (e && e.message ? e.message : '失败'); }));
+    }
+    if (tdtKey) {
+        jobs.push(geocodeTianditu('北京市').then(
+            function (l) { return '天地图：✓ 可用（返回 ' + l.length + ' 条）'; },
+            function (e) { return '天地图：✗ ' + (e && e.message ? e.message : '失败'); }));
+    }
+    Promise.all(jobs).then(function (lines) {
+        openKeySettings('测试结果：<br>' + lines.map(esc).join('<br>'));
+    });
 }
 
 function fetchJson(url) {
@@ -987,8 +1696,24 @@ function fetchJson(url) {
         return res.json();
     }, function (e) {
         done();
-        throw e;
+        throw markFetchError(e);
     });
+}
+
+// 标记「不可达」类错误（超时 / 断网）：这类错误会计入跳过统计（见 noteSourceFail）。
+// 注意不能改写 DOMException 的 message（只读），要换成新 Error。
+function markFetchError(e) {
+    if (e && e.name === 'AbortError') {
+        var t = new Error('请求超时');
+        t.timeout = true;
+        return t;
+    }
+    if (e instanceof TypeError) {
+        var n = new Error('网络不可达');
+        n.network = true;
+        return n;
+    }
+    return e;
 }
 
 function geocodeEsri(q) {
@@ -1039,15 +1764,33 @@ function geocodeNominatim(q) {
     });
 }
 
+var AMAP_ERR_TEXT = {
+    INVALID_USER_KEY: 'key 无效（REST 接口需「Web服务」类型 key）',
+    USERKEY_PLAT_NOMATCH: 'key 服务类型不对（需「Web服务」）',
+    USER_DAILY_QUERY_OVER_LIMIT: 'key 今日配额已用完',
+    DAILY_QUERY_OVER_LIMIT: 'key 今日配额已用完',
+    NOT_SUPPORT_HTTPS: '该 key 不支持 https 调用'
+};
+
+function amapError(j) {
+    var info = j && j.info ? String(j.info) : '接口异常';
+    // 不带「高德：」前缀：调用处（errs.push / 测试行）已拼接来源名
+    return new Error(AMAP_ERR_TEXT[info] || info);
+}
+
+// 高德 POI 文本搜索。GCJ-02 返回，转 WGS-84 与底图对齐（见 geocode.js）
 function geocodeAmap(q) {
-    var url = 'https://restapi.amap.com/v3/place/text?key=' + encodeURIComponent(CONFIG.GEOCODE.AMAP_KEY) +
+    var key = geoKey('amap');
+    if (!key) return Promise.reject(new Error('未配置高德 key'));
+    var url = 'https://restapi.amap.com/v3/place/text?key=' + encodeURIComponent(key) +
         '&keywords=' + encodeURIComponent(q) +
         '&offset=' + (CONFIG.GEOCODE.LIMIT || 6) + '&page=1&extensions=base';
     return fetchJson(url).then(function (j) {
-        return (j.pois || []).map(function (p) {
+        if (String(j.status) !== '1') throw amapError(j);
+        var list = (j.pois || []).map(function (p) {
             var loc = String(p.location || '').split(',');
-            if (loc.length !== 2) return null;
-            var wgs = gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
+            if (loc.length !== 2 || !loc[0]) return null;
+            var wgs = Geocode.gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
             return {
                 name: p.name || q,
                 address: (p.pname || '') + (p.cityname || '') + (p.adname || '') + (p.address || ''),
@@ -1056,135 +1799,134 @@ function geocodeAmap(q) {
                 lng: wgs[0]
             };
         }).filter(Boolean);
+        if (list.length) return list;
+        // POI 没搜到（部分自然村/组未收录）→ 退回行政区划地理编码，至少定位到所属市县镇
+        return geocodeAmapDistrict(q, key);
     });
 }
 
-/* GCJ-02（高德/腾讯）↔ WGS-84（Esri 底图），迭代反算 */
-
-var GCJ_A = 6378245.0;
-var GCJ_EE = 0.00669342162296594323;
-
-function gcjOutOfChina(lng, lat) {
-    return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271;
-}
-
-function gcjTransformLat(x, y) {
-    var r = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    r += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
-    r += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
-    return r;
-}
-
-function gcjTransformLng(x, y) {
-    var r = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    r += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
-    r += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
-    return r;
-}
-
-function wgs84ToGcj02(lng, lat) {
-    if (gcjOutOfChina(lng, lat)) return [lng, lat];
-    var dLat = gcjTransformLat(lng - 105.0, lat - 35.0);
-    var dLng = gcjTransformLng(lng - 105.0, lat - 35.0);
-    var radLat = lat / 180.0 * Math.PI;
-    var magic = Math.sin(radLat);
-    magic = 1 - GCJ_EE * magic * magic;
-    var sqrtMagic = Math.sqrt(magic);
-    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
-    dLng = (dLng * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
-    return [lng + dLng, lat + dLat];
-}
-
-function gcj02ToWgs84(lng, lat) {
-    if (gcjOutOfChina(lng, lat)) return [lng, lat];
-    var w = [lng, lat];
-    for (var i = 0; i < 5; i++) {
-        var g = wgs84ToGcj02(w[0], w[1]);
-        w[0] += lng - g[0];
-        w[1] += lat - g[1];
-    }
-    return w;
-}
-
-function bboxPolygon(b) {
-    return [
-        [b.south, b.west],
-        [b.south, b.east],
-        [b.north, b.east],
-        [b.north, b.west]
-    ];
-}
-
-// 从一条地理编码结果取出多边形：优先用 bbox，否则用坐标点画小方框
-function placePolygon(r) {
-    if (r.bbox) return bboxPolygon(r.bbox);
-    if (typeof r.lat === 'number' && typeof r.lng === 'number') return boxAround([[r.lat, r.lng]], 0.004);
-    return null;
-}
-
-function createRegionFromPlace(i) {
-    if (!state.data) return;
-    var r = (state._placeResults || [])[i];
-    if (!r) return;
-    var poly = placePolygon(r);
-    if (!poly) { toast('该结果没有可用范围'); return; }
-    var name = r.name || '新区域';
-    var km = spanKmOf(poly);
-    if (km <= CONFIG.REGION_MAX_SPAN_KM) {
-        addRegionFromPlace(name, poly);
-        return;
-    }
-    showDialog({
-        title: '区域跨度超出建议上限',
-        body: '<div class="dialog-note">「' + esc(name) + '」的涵盖范围约 ' + Math.round(km) + ' km，超过建议上限 ' + CONFIG.REGION_MAX_SPAN_KM + ' km。<br/>' +
-            '相邻但分开的居住地请各建一个区域、切换查看。仍要创建吗？</div>',
-        buttons: [
-            { label: '取消' },
-            { label: '仍创建', cls: 'primary', onClick: function () { addRegionFromPlace(name, poly); } }
-        ]
+function geocodeAmapDistrict(q, key) {
+    var url = 'https://restapi.amap.com/v3/geocode/geo?key=' + encodeURIComponent(key) +
+        '&address=' + encodeURIComponent(q) + '&multiResult=true';
+    return fetchJson(url).then(function (j) {
+        if (String(j.status) !== '1') return [];
+        return (j.geocodes || []).map(function (g) {
+            var loc = String(g.location || '').split(',');
+            if (loc.length !== 2 || !loc[0]) return null;
+            var wgs = Geocode.gcj02ToWgs84(parseFloat(loc[0]), parseFloat(loc[1]));
+            return {
+                name: g.district || q,
+                address: (g.formatted_address || '') + (g.level ? '（' + g.level + '）' : ''),
+                bbox: null,
+                lat: wgs[1],
+                lng: wgs[0]
+            };
+        }).filter(Boolean);
     });
 }
 
-// 地名搜索建区（过跨度检查后调用）。
-function addRegionFromPlace(name, poly) {
-    var region = { id: newRegionId(), name: name, polygon: poly };
-    state.data.regions.push(region);
-    state.data.activeRegionId = region.id;
-    saveData();
-    renderRegions();
-    state._placeResults = null;
-    document.getElementById('placeResults').innerHTML = '';
-    document.getElementById('placeInput').value = '';
-    fitRegion(region);
-    toggleSidebarIfOpen();
-    toast('已按「' + region.name + '」添加区域');
-    if (pendingDraft) {
-        var draft = pendingDraft;
-        pendingDraft = null;
-        savePersonDraft(draft, region.id);
-    }
+var PHOTON_KIND = {
+    village: '村', hamlet: '自然村', town: '镇', city: '市', county: '县',
+    district: '区', municipality: '直辖市', state: '省', country: '国家',
+    house: '门牌', street: '道路', locality: '地名', farm: '农场'
+};
+
+// Photon：OSM 数据的免 key 检索（photon.komoot.io 公共实例）。
+// 免注册免 key、大陆可达性实测较好；数据来自 OSM，村名覆盖不如高德全，作为免 key 方案。
+// 返回即 WGS-84，免纠偏。
+function geocodePhoton(q) {
+    var c = map ? map.getCenter() : L.latLng(CONFIG.CENTER[0], CONFIG.CENTER[1]);
+    var url = 'https://photon.komoot.io/api?q=' + encodeURIComponent(q) +
+        '&limit=' + (CONFIG.GEOCODE.LIMIT || 6) +
+        '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4);
+    return fetchJson(url).then(function (j) {
+        return (j.features || []).map(function (f) {
+            var p = f.properties || {};
+            var g = f.geometry && f.geometry.coordinates;
+            if (!g || g.length !== 2 || typeof g[0] !== 'number') return null;
+            var parts = [p.country, p.state, p.city, p.county, p.district];
+            var seen = {}, addr = [];
+            parts.forEach(function (x) {
+                if (!x || seen[x] || x === p.name) return; // 去重、避免与名称重复
+                seen[x] = true;
+                addr.push(x);
+            });
+            var kind = PHOTON_KIND[p.osm_value] || p.osm_value || '';
+            return {
+                name: p.name || q,
+                address: addr.join(' ') + (kind ? '（' + kind + '）' : ''),
+                bbox: p.extent ? { west: p.extent[0], north: p.extent[1], east: p.extent[2], south: p.extent[3] } : null,
+                lat: g[1],
+                lng: g[0]
+            };
+        }).filter(Boolean);
+    });
 }
 
-// 只把地图定位过去，不建区域（摆放人物前先找到位置；bbox 有范围则落到中心）。
+// 天地图地理编码（国内官方服务，免费 tk；直接返回 WGS-84，免纠偏）。单结果接口，作补充源。
+function geocodeTianditu(q) {
+    var key = geoKey('tianditu');
+    if (!key) return Promise.reject(new Error('未配置天地图 tk'));
+    var ds = JSON.stringify({ keyWord: q });
+    var url = 'https://api.tianditu.gov.cn/geocoder?ds=' + encodeURIComponent(ds) +
+        '&tk=' + encodeURIComponent(key);
+    return fetchJson(url).catch(function (e) {
+        // 天地图对无效 tk 返回 HTTP 400，给出可操作的提示
+        if (/^HTTP 40\d$/.test(e && e.message ? e.message : '')) {
+            throw new Error('tk 无效（需「浏览器端」类型）');
+        }
+        throw e;
+    }).then(function (j) {
+        var loc = j && j.location;
+        if (!loc || typeof loc.lon !== 'number' || typeof loc.lat !== 'number') {
+            throw new Error('无匹配结果');
+        }
+        var score = j.score != null && !isNaN(+j.score) ? '，置信度 ' + Math.round(+j.score * 100) + '%' : '';
+        return [{
+            name: q,
+            address: '天地图匹配' + score,
+            bbox: null,
+            lat: loc.lat,
+            lng: loc.lon
+        }];
+    });
+}
+
+// 搜索结果只做定位：把地图移到该处，不建区域、不改数据。
 function flyToPlace(i) {
     if (!map) return;
     var r = (state._placeResults || [])[i];
     if (!r) return;
     var b = r.bbox ? L.latLngBounds([[r.bbox.south, r.bbox.west], [r.bbox.north, r.bbox.east]]) : null;
-    if (b) {
-        // 大范围（如市级）用 fitBounds 保留参照，小范围用上限 17 拉近；
-        // 若被缩放下限拦住，Leaflet 会自动钳到允许的级别，不会越界
-        map.fitBounds(b, { maxZoom: 17, animate: true });
-    } else {
-        map.setView([r.lat, r.lng], 17, { animate: true });
-    }
     var anchor = b ? b.getCenter() : L.latLng(r.lat, r.lng);
-    if (addMode) { toast('已定位：点击地图放置人物', 3000); return; }
+
+    // 目标在当前区域外：临时解除平移硬墙，允许"预览式"定位
     var panB = map.options.maxBounds;
-    if (panB && !panB.contains(anchor)) {
-        toast('目的地在区域外，地图停在边界可及处；要标注那里 → 菜单「添加人物」（放置时解锁）', 4200);
+    var outside = !!(panB && !panB.contains(anchor));
+    if (outside) {
+        state.previewOutside = true;
+        map.setMaxBounds(null);
+        map.setMinZoom(CONFIG.MIN_ZOOM);
+    }
+
+    state._locating = true; /* 定位过程中不要触发"回到区域内"的重新锁定 */
+    state._locateTarget = { lat: anchor.lat, lng: anchor.lng };
+    if (state._locateTimer) clearTimeout(state._locateTimer);
+    // 兜底：万一定位没引起 moveend（比如就在原地），1.6 秒后也解除标记
+    state._locateTimer = setTimeout(function () {
+        state._locating = false;
+        state._locateTarget = null;
+    }, 1600);
+    if (map.stop) map.stop(); /* 取消上一次还没跑完的动画，避免连点两次只有第一次生效 */
+    // 只跳转，不改变缩放、不按结果范围"框"视野
+    map.setView([anchor.lat, anchor.lng], map.getZoom(), { animate: false });
+
+    if (addMode) { toast('已定位：点击地图放置人物', 3000); return; }
+    try { console.info('[search] 仅定位（不建区、不改缩放）：', r.name || anchor); } catch (e) {}
+    if (outside) {
+        toast('已定位到区域外（只移动地图，不建区）。要在这里建区：用「地图上框选新区域」', 4500);
+    } else {
+        toast('已定位到「' + (r.name || '目标位置') + '」（只移动地图，不会建区）', 2500);
     }
 }
 
@@ -1622,7 +2364,7 @@ function saveRelation() {
 
 function exportData() {
     if (!state.data) return;
-    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId };
+    var payload = { version: 3, regions: state.data.regions, activeRegionId: state.data.activeRegionId, regionsCleared: state.data.regionsCleared === true, persons: state.data.persons, relations: state.data.relations, rootId: state.data.rootId };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1852,6 +2594,11 @@ function hideSearch() {
 function boot() {
     migrateLegacy();
     renderStartup();
+    // 便于排查"改了却没生效"：标签页标题 + 控制台都会带上构建号
+    try {
+        document.title = '亲属关系地图 · 构建 1.38';
+        console.info('[kinmap] build 1.38 · 切档清搜索 + 可删除最后一个区域');
+    } catch (e) {}
 }
 
 document.addEventListener('click', function (e) {
