@@ -979,6 +979,7 @@ var GraphLayout = (function () {
         var rootId = input.rootId || null;
         var groupByPlace = !!input.groupByPlace; // 按地点分树：每地点一棵、根连我、各占一扇区
         var placeRoots = [];  // 按地点分树时各地点树的根（供"根连我"连线用）
+        var placeTreeParent = {}; // 按地点分树时每人对应的父节点（供画"根→子→孙"树线用）
 
         /* ---------- 1. 收集：所有人先进 info（没连通的人也要画在最外圈） ---------- */
         var people = {};
@@ -1443,6 +1444,7 @@ var GraphLayout = (function () {
                     });
                     cand = elders[0] || root;
                     pTreeParent[id] = cand;
+                    placeTreeParent[id] = cand; // 保存供画树线用
                     (pTreeChildren[cand] = pTreeChildren[cand] || []).push(id);
                     attached[id] = true;
                 });
@@ -1690,10 +1692,13 @@ var GraphLayout = (function () {
             });
         }
 
-        norm.parents.forEach(function (l) {
-            addEdge(l.parentId, l.childId, 'descent',
-                l.displayTypes && l.displayTypes.length ? l.displayTypes : l.parentTypes, l.ris);
-        });
+        // 按地点分树时，父子线由布局的辈分树（placeTreeParent）决定，而不是数据里的关系边
+        if (!groupByPlace) {
+            norm.parents.forEach(function (l) {
+                addEdge(l.parentId, l.childId, 'descent',
+                    l.displayTypes && l.displayTypes.length ? l.displayTypes : l.parentTypes, l.ris);
+            });
+        }
         norm.spouses.forEach(function (l) {
             addEdge(l.a, l.b, 'spouse', l.types, l.ris);
         });
@@ -1703,8 +1708,17 @@ var GraphLayout = (function () {
         norm.kin.forEach(function (l) {
             addEdge(l.a, l.b, 'kin', l.types, l.ris);
         });
-        // 按地点分树：每个地点树的根连一条线到中心的「我」
+        // 按地点分树：画每棵树的"根→子→孙"父子线 + 每个根连到我
         if (groupByPlace) {
+            // 父子线：用布局按辈分算出的树关系
+            Object.keys(placeTreeParent).forEach(function (cid) {
+                var pid = placeTreeParent[cid];
+                if (!pid || !info[cid] || !info[pid]) return;
+                // 同辈（同 gen）不算父子，不画线；只有跨辈才画"根→子→孙"线
+                if (info[cid].gen === info[pid].gen) return;
+                addEdge(pid, cid, 'descent', [], []);
+            });
+            // 每个地点树的根连一条线到中心的「我」
             placeRoots.forEach(function (rid) {
                 if (rid === rootId) return;
                 addEdge(rootId, rid, 'kin', [info[rid].name || '']);

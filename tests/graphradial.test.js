@@ -393,5 +393,17 @@ for (var mi = 0; mi < multiG.nodes.length; mi++) for (var mj = mi + 1; mj < mult
 }
 ok(ov === 0, '多地点树状图不应有名框重叠（实际 ' + ov + '）');
 
+// 即使 relations 没有父子边，地点树也画出跨辈的 descent 线，且同辈不连父子线
+var lineP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'lg', name: '爷爷', gender: 'm', age: null, titles: [], placeId: 'pL' },
+    { id: 'lf', name: '爸爸', gender: 'm', age: null, titles: [], placeId: 'pL' },
+    { id: 'lf2', name: '叔叔', gender: 'm', age: null, titles: [], placeId: 'pL' }
+];
+var lineG = radialPlaced(lineP, [], 'me');
+var desc = lineG.edges.filter(function (e) { return e.kind === 'descent'; });
+ok(desc.length >= 2, '无父子关系边时，仍按辈分画出树的父子线（实际 ' + desc.length + ' 条）');
+ok(lineG.edges.some(function (e) { return e.kind === 'kin' && e.title === '爷爷'; }), '树根（爷爷）连到「我」');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
