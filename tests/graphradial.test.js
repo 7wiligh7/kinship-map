@@ -421,5 +421,17 @@ var gnGong = nodeOfG(gnG, 'gg'), gnDie = nodeOfG(gnG, 'dd');
 ok(gnGong && gnGong.r < gnDie.r, '15公(一世/公)应比大爹(二世/爹)更靠近我（r ' + gnGong.r.toFixed(0) + ' < ' + gnDie.r.toFixed(0) + '）');
 ok(gnGong && gnGong.gen === -2 && gnDie && gnDie.gen === -1, '按称呼定世：公=一世(-2)、爹=二世(-1)');
 
+// 同地点同排行的一男一女自动配成夫妻：画配偶线且摆相邻
+var spP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 's1', name: '7公', gender: 'm', age: null, titles: [], placeId: 'pS' },
+    { id: 's2', name: '7婆', gender: 'f', age: null, titles: [], placeId: 'pS' }
+];
+var spG = radialPlaced(spP, [], 'me'); // 无配偶关系边
+var spEdges = spG.edges.filter(function (e) { return e.kind === 'spouse'; });
+ok(spEdges.length === 1, '同地点同排行的 7公/7婆 自动画一条配偶线（实际 ' + spEdges.length + '）');
+var s1 = nodeOfG(spG, 's1'), s2 = nodeOfG(spG, 's2');
+ok(s1 && s2 && dist(s1, s2) < 120, '夫妻应摆相邻（实际距离 ' + dist(s1, s2).toFixed(0) + '）');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

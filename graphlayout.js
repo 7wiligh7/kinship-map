@@ -1201,6 +1201,32 @@ var GraphLayout = (function () {
         });
         var unreachIds = Object.keys(info).filter(function (id) { return info[id].unreach; });
 
+        // 按地点分树时，自动推断配偶：同地点 + 同排行 + 同辈 + 一男一女 → 配成夫妻。
+        // 即使 relations 里没有配偶边，也让夫妻相邻并画出婚线。
+        var placeSpouses = [];   // [aId, bId] 对
+        var spouseOfLocal = {};
+        if (groupByPlace) {
+            var pairMap = {};
+            Object.keys(info).forEach(function (id) {
+                if (id === rootId) return;
+                var n = info[id];
+                if (!n.gender) return;
+                var rk = n.rank == null ? 'x' : String(n.rank);
+                var key = (n.placeId || 'none') + '|' + rk + '|' + (n.gen == null ? 'x' : n.gen);
+                (pairMap[key] = pairMap[key] || { m: [], f: [] })[n.gender === 'm' ? 'm' : 'f'].push(id);
+            });
+            Object.keys(pairMap).forEach(function (key) {
+                var g = pairMap[key];
+                var max = Math.min(g.m.length, g.f.length);
+                for (var i = 0; i < max; i++) {
+                    var a = g.m[i], b = g.f[i];
+                    if (spouseOfLocal[a] || spouseOfLocal[b]) continue;
+                    spouseOfLocal[a] = b; spouseOfLocal[b] = a;
+                    placeSpouses.push([a, b]);
+                }
+            });
+        }
+
         // 摆位用的父节点：同地址时仍优先挂同址长辈；非同址时默认挂到直系亲属
         // （父母/祖父母/子女/孙子女）分支下。只改角度树，不写回关系数据。
         // 按辈分从高到低确定父节点，保证不会成环。
@@ -1617,6 +1643,23 @@ var GraphLayout = (function () {
             if (d > 0 && !groupByPlace) rotateRing(ringMap[d], d);
         });
 
+        // 配偶摆一起：把每对夫妻的角度调成相邻（同 gen 同半径），然后重新 pack 保证不重叠
+        if (groupByPlace && placeSpouses.length) {
+            placeSpouses.forEach(function (pair) {
+                var a = info[pair[0]], b = info[pair[1]];
+                if (!a || !b || a.gen !== b.gen) return;
+                // 以男方角度为基准，女方放到紧邻（角度差 = 两人名框半宽和 / 半径）
+                var r = radius[a.depth] || R_FIRST_RING;
+                var delta = ((a.titleW + b.titleW) / 2 + R_NODE_GAP * 0.5) / r;
+                b.angle = a.angle + delta;
+                b.angled = true;
+            });
+            // 重新 pack 各圈，消除因对齐产生的重叠（保序推开、平移回中心）
+            depths.forEach(function (d) {
+                if (d > 0 && ringMap[d] && ringMap[d].length) packRing(ringMap[d], radius[d]);
+            });
+        }
+
         /* ---------- 5. 落坐标：方形画布，中心固定为「我」 ---------- */
         var maxR = 0;
         depths.forEach(function (d) { if (radius[d] > maxR) maxR = radius[d]; });
@@ -1710,7 +1753,7 @@ var GraphLayout = (function () {
         norm.kin.forEach(function (l) {
             addEdge(l.a, l.b, 'kin', l.types, l.ris);
         });
-        // 按地点分树：画每棵树的"根→子→孙"父子线 + 每个根连到我
+        // 按地点分树：画每棵树的"根→子→孙"父子线 + 每个根连到我 + 推断的配偶线
         if (groupByPlace) {
             // 父子线：用布局按辈分算出的树关系
             Object.keys(placeTreeParent).forEach(function (cid) {
@@ -1719,6 +1762,14 @@ var GraphLayout = (function () {
                 // 同辈（同 gen）不算父子，不画线；只有跨辈才画"根→子→孙"线
                 if (info[cid].gen === info[pid].gen) return;
                 addEdge(pid, cid, 'descent', [], []);
+            });
+            // 推断的配偶线（数据里没 spouse 边时补画）
+            placeSpouses.forEach(function (pair) {
+                // 已有配偶边则不重复画
+                var exists = norm.spouses.some(function (l) {
+                    return (l.a === pair[0] && l.b === pair[1]) || (l.a === pair[1] && l.b === pair[0]);
+                });
+                if (!exists) addEdge(pair[0], pair[1], 'spouse', ['配偶'], []);
             });
             // 每个地点树的根连一条线到中心的「我」
             placeRoots.forEach(function (rid) {
