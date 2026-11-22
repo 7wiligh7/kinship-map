@@ -405,5 +405,21 @@ var desc = lineG.edges.filter(function (e) { return e.kind === 'descent'; });
 ok(desc.length >= 2, '无父子关系边时，仍按辈分画出树的父子线（实际 ' + desc.length + ' 条）');
 ok(lineG.edges.some(function (e) { return e.kind === 'kin' && e.title === '爷爷'; }), '树根（爷爷）连到「我」');
 
+// 只按称呼定世：即使关系 type 用名字原值算出 gen=0，公/婆仍归一世最靠近我
+var gnP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'gg', name: '15公', gender: 'm', age: null, titles: [], placeId: 'pG' },
+    { id: 'dd', name: '大爹', gender: 'm', age: null, titles: [], placeId: 'pD' }
+];
+var gnR = [
+    { from: 'gg', to: 'me', type: '15公' },
+    { from: 'dd', to: 'me', type: '大爹' }
+];
+var gnK = Kinship.compute('me', gnP, gnR);
+var gnG = radialPlaced(gnP, gnR, 'me');
+var gnGong = nodeOfG(gnG, 'gg'), gnDie = nodeOfG(gnG, 'dd');
+ok(gnGong && gnGong.r < gnDie.r, '15公(一世/公)应比大爹(二世/爹)更靠近我（r ' + gnGong.r.toFixed(0) + ' < ' + gnDie.r.toFixed(0) + '）');
+ok(gnGong && gnGong.gen === -2 && gnDie && gnDie.gen === -1, '按称呼定世：公=一世(-2)、爹=二世(-1)');
+
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

@@ -1171,13 +1171,15 @@ var GraphLayout = (function () {
         }
 
         var genValues = [];
+        // 只根据称呼（名字/称谓关键字）定辈分，不看关系边算出的 gen（关系 type 是名字原值时算不准）。
+        // 一世(公/婆/祖辈)=gen-2 最靠近我，二世(爹/叔/姑/妈/娘)=gen-1，依次向外。
         Object.keys(info).forEach(function (id) {
             var n = info[id];
-            n.gen = n.labelGen;
-            if (n.gen == null) n.gen = estimateGen(n);
+            var nameGen = estimateGen(n);   // 名字关键字定世
+            n.gen = nameGen != null ? nameGen : n.labelGen; // 名字优先，关系 gen 兜底
             if (id !== rootId && n.gen != null && genValues.indexOf(n.gen) < 0) genValues.push(n.gen);
         });
-        genValues.sort(function (a, b) { return a - b; }); // 最小 = 最高辈
+        genValues.sort(function (a, b) { return a - b; }); // 最小 = 最高辈（一世）
         var genRing = {};
         genValues.forEach(function (g, i) { genRing[g] = i + 1; });
         var unknownRing = genValues.length + 1;
