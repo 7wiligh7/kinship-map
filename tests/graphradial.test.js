@@ -256,7 +256,20 @@ ok(/addEventListener\('wheel'/.test(appSrc), '关系图应支持滚轮缩放');
 ok(/pointerdown/.test(appSrc) && /pointermove/.test(appSrc), '关系图应支持拖动平移/双指缩放');
 ok(/pointerup/.test(appSrc), '拖动结束应处理 pointerup（含惯性）');
 ok(/addEventListener\('dblclick'/.test(appSrc), '关系图应支持双击放大/还原');
-ok(/attachPlaceGenerations/.test(appSrc), '关系图应提供「同址辈分挂靠」动作');
+ok(!/attachPlaceGenerations/.test(appSrc), '「同址辈分挂靠」按钮已移除，功能并入「补齐关系网」');
+
+// 父子线画成树状折线（径向出→横向拐→径向进），不是一条放射直线
+var treeLineG = (function () {
+    var ps = [
+        { id: 'tme', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+        { id: 'tg', name: '爷爷', gender: 'm', age: null, titles: [], placeId: 'pT' },
+        { id: 'tf', name: '爸爸', gender: 'm', age: null, titles: [], placeId: 'pT' }
+    ];
+    var kk = Kinship.compute('tme', ps, []);
+    return GraphLayout.radial({ persons: ps, relations: [], labels: kk.labels, rootId: 'tme', groupByPlace: true });
+})();
+var td = treeLineG.edges.filter(function (e) { return e.kind === 'descent'; })[0];
+ok(td && (td.d.match(/L/g) || []).length >= 2, '父子线应为多段折线（树线），不是单段直线');
 
 /* ---------- 7. 同址辈分挂靠：逐级挂高一辈，写真实关系 ---------- */
 var apPersons = [

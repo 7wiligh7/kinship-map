@@ -1708,7 +1708,24 @@ var GraphLayout = (function () {
             var curved = sameRing && kind !== 'descent';
             var d;
             var ctrl = null;
-            if (curved) {
+            // 父子线画成"树线"：从父框外缘沿径向出一段 → 横向拐到子的角度 → 再沿径向进子框，
+            // 像二叉树/族谱的分叉连接，而不是从圆心拉一条放射直线。
+            if (kind === 'descent' && !sameRing && a.r != null && b.r != null) {
+                var aAng = a.angle, bAng = b.angle;
+                var midR = (a.r + b.r) / 2;
+                var p1x = cx + Math.cos(aAng) * (a.r + a.h / 2 + 6);
+                var p1y = cy + Math.sin(aAng) * (a.r + a.h / 2 + 6);
+                var p2x = cx + Math.cos(aAng) * midR;
+                var p2y = cy + Math.sin(aAng) * midR;
+                var p3x = cx + Math.cos(bAng) * midR;
+                var p3y = cy + Math.sin(bAng) * midR;
+                var p4x = cx + Math.cos(bAng) * (b.r - b.h / 2 - 6);
+                var p4y = cy + Math.sin(bAng) * (b.r - b.h / 2 - 6);
+                d = 'M' + r1v(p1x) + ' ' + r1v(p1y) +
+                    'L' + r1v(p2x) + ' ' + r1v(p2y) +
+                    'L' + r1v(p3x) + ' ' + r1v(p3y) +
+                    'L' + r1v(p4x) + ' ' + r1v(p4y);
+            } else if (curved) {
                 var dx = b.x - a.x;
                 var dy = b.y - a.y;
                 var len = Math.sqrt(dx * dx + dy * dy) || 1;

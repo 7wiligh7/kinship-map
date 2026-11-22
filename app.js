@@ -2987,24 +2987,6 @@ function autoFillRelations() {
 
 // 同址辈分挂靠：同一地点里不同辈分的人，逐级挂到刚好高一辈的人下面；
 // 中间缺辈就挂到该地点最高辈。生成的是真实关系，会影响称谓推算与导出。
-function attachPlaceGenerations() {
-    if (!state.data || !state.data.persons.length) { toast('还没有人物数据'); return; }
-    var rootId = effectiveRootId();
-    if (!rootId) { toast('还没有人物数据'); return; }
-    var adds = Kinship.attachSamePlaceGenerations(
-        state.data.persons, state.data.relations, state.data.places || [], rootId
-    );
-    if (!adds.length) { toast('同一地点各辈分已经挂靠好了'); return; }
-    if (!confirm('将新增 ' + adds.length + ' 条同址挂靠关系（写进真实数据，会影响称谓推算与导出）。确定继续？')) return;
-    adds.forEach(function (r) { state.data.relations.push(r); });
-    saveData();
-    markUserModified();
-    renderAll(false);
-    if (state.openPlaceId && document.getElementById('infoCard').classList.contains('show')) openPlaceCard(state.openPlaceId);
-    if (document.getElementById('graphPanel').classList.contains('show')) renderGraph();
-    toast('已挂靠 ' + adds.length + ' 条同址关系');
-}
-
 function graphGenText(gen) {
     if (gen == null) return '辈分未明';
     if (gen < 0) return '高 ' + (-gen) + ' 辈';
@@ -3582,7 +3564,6 @@ var ACTIONS = {
     deletePersonById: function (el) { deletePersonById(el.dataset.id); },
     openGraph: openGraph,
     autoFillRelations: function () { autoFillRelations(); },
-    attachPlaceGenerations: function () { attachPlaceGenerations(); },
     importData: importData,
     exportData: exportData,
     clearAll: clearAll,
