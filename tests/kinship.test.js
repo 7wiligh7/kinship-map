@@ -476,61 +476,27 @@ eq(K.matchStrength('父亲', '爸爸'), 2, '父亲 ↔ 爸爸 俗称匹配');
 eq(K.matchStrength('姑姑', '秀姑') > 0, true, '「秀姑」尾字兜底能匹配姑姑');
 eq(K.matchStrength('奶奶', '老公'), 0, '「老公」不该匹配奶奶');
 
-// 零关系起步：只有相对「我」的称谓，反推出全部关系边
+// 补齐关系网 = 同地点内建树：按称谓定世补父子链 + 同排行异性补配偶，不连我、不跨地点
 var bp = [
-    { id: 'me', name: '我', gender: 'm' },
-    { id: 'fa', name: '爸爸', gender: 'm' },
-    { id: 'gf', name: '爷爷', gender: 'm' },
-    { id: 'gm', name: '奶奶', gender: 'f' },
-    { id: 'gz', name: '曾祖父', gender: 'm' },
-    { id: 'str', name: '张三' }   // 猜不出的保持未连通
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'gf', name: '15公', gender: 'm', placeId: 'pB' },
+    { id: 'gm', name: '15婆', gender: 'f', placeId: 'pB' },
+    { id: 'fa', name: '大爹', gender: 'm', placeId: 'pC' },
+    { id: 'son', name: '小叔', gender: 'm', placeId: 'pC' }
 ];
 var bOrig = [];
 var br = K.buildRelations(bp, bOrig, 'me');
-eq(br.length, 4, '补齐 4 条关系（张三猜不出，实际 ' + br.length + '）');
-eq(bOrig.length, 0, '传入的关系数组不被改动');
-var bout = K.compute('me', bp, br);
-eq(L(bout, 'fa'), '父亲', '爸爸反推出「父亲」');
-eq(GEN(bout, 'fa'), -1, '爸爸 gen -1');
-eq(L(bout, 'gf'), '爷爷', '爷爷反推出「爷爷」');
-eq(GEN(bout, 'gf'), -2, '爷爷 gen -2');
-eq(L(bout, 'gm'), '奶奶', '奶奶反推出「奶奶」');
-eq(L(bout, 'gz'), '曾祖父', '曾祖父挂在爷爷下反推');
-eq(GEN(bout, 'gz'), -3, '曾祖父 gen -3');
-eq(L(bout, 'str'), null, '张三仍未连通');
-var gfEdge = br.filter(function (r) { return r.from === 'gf'; })[0];
-ok(!!gfEdge && gfEdge.to === 'fa' && gfEdge.type === '父亲',
-    '爷爷应挂到爸爸下面（世系线更正）：' + JSON.stringify(gfEdge));
-eq(K.buildRelations(bp, br, 'me').length, 0, '再次调用没有可补的（幂等）');
-
-// 已有关系的只补缺的
-var cp = [
-    { id: 'me3', name: '我' }, { id: 'fa3', name: '爸爸' }, { id: 'gf3', name: '爷爷' }
-];
-var cOrig = [{ from: 'fa3', to: 'me3', type: '父亲' }];
-var cr = K.buildRelations(cp, cOrig, 'me3');
-eq(cr.length, 1, '只补缺的一条');
-eq(cr[0].from, 'gf3', '缺的是爷爷');
-eq(cOrig.length, 1, '已有关系不被改动');
-
-// 排行定长幼：舅舅挂妈妈下，13 > 12 是弟弟，11 < 12 是哥哥
-var jp = [
-    { id: 'me2', name: '我', gender: 'f' },
-    { id: 'mo2', name: '15妈', gender: 'f' },
-    { id: 'j1', name: '16舅', gender: 'm' },
-    { id: 'j2', name: '14舅', gender: 'm' }
-];
-var jr = K.buildRelations(jp, [], 'me2');
-eq(jr.length, 3, '妈妈 + 两个舅舅共 3 条');
-var e1 = jr.filter(function (r) { return r.from === 'j1'; })[0];
-var e2 = jr.filter(function (r) { return r.from === 'j2'; })[0];
-ok(!!e1 && e1.to === 'mo2' && e1.type === '弟弟',
-    '16舅 排行大于 15妈 → 弟弟：' + JSON.stringify(e1));
-ok(!!e2 && e2.to === 'mo2' && e2.type === '哥哥',
-    '14舅 排行小于 15妈 → 哥哥：' + JSON.stringify(e2));
-var jout = K.compute('me2', jp, jr);
-eq(L(jout, 'j1'), '舅舅', '16舅的称谓仍是舅舅');
-eq(GEN(jout, 'j1'), -1, '舅舅 gen -1');
+ok(bOrig.length === 0, '传入的关系数组不被改动');
+ok(br.every(function (r) { return r.to !== 'me'; }), '补齐不生成连到「我」的边');
+// 跨地点检查：每条边的两端要么同地点，要么不是跨地点父子树
+var pmapB = {}; bp.forEach(function (p) { pmapB[p.id] = p; });
+ok(br.every(function (r) {
+    var a = pmapB[r.from], b = pmapB[r.to];
+    return a && b && a.placeId === b.placeId; // 全部同地点
+}), '补齐的边都在同一地点内（不跨地点）');
+ok(br.some(function (r) { return r.type === '配偶'; }), '同地点同排行异性补配偶（15公↔15婆）');
+var again = K.buildRelations(bp, br, 'me');
+eq(again.length, 0, '再次调用没有可补的（幂等）');
 
 console.log('pass=' + pass + ' fail=' + fail);
 process.exit(fail ? 1 : 0);

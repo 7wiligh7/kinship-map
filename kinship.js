@@ -1152,121 +1152,70 @@
   // 自动补齐关系网：为还没连进「我」的关系网的人反推关系边。
   // 返回新增关系数组（{from, to, type}：from 是 to 的 type），只增不改。
   function buildRelations(persons, relations, rootId) {
-    if (!persons || !persons.length || !rootId) return [];
-    var pmap = {};
-    persons.forEach(function (p) { pmap[p.id] = p; });
-    if (!pmap[rootId]) return [];
-
-    var rels = (relations || []).slice();
-    var added = [];
-    var labels = {};
-    function recompute() { labels = compute(rootId, persons, rels).labels; }
-    recompute();
-
-    // 第一跳可直接用的关系词：关系表单里能选的类型（代际已知）
-    var directWords = [];
-    TYPE_GROUPS.forEach(function (g) {
-      g.types.forEach(function (t) { if (directWords.indexOf(t) < 0) directWords.push(t); });
+    // 同地点内建关系树：按称谓定世补父子链，同地点同排行的一男一女补配偶。
+    // 不连「我」、不跨地点——避免生成错误的跨地点关系。
+    persons = persons || [];
+    relations = relations || [];
+    var places = [];
+    var seen = {};
+    persons.forEach(function (p) {
+        if (p && p.placeId && !seen[p.placeId]) { seen[p.placeId] = true; places.push({ id: p.placeId }); }
     });
-    // 第二跳起把规则表里出现过的关系词都试一遍
-    var vocab = directWords.slice();
-    Object.keys(RULES).forEach(function (key) {
-      var w = key.split('|')[1];
-      if (w && vocab.indexOf(w) < 0) vocab.push(w);
-    });
+    // 1) 同地点父子链（复用同址挂靠逻辑）
+    var added = attachSamePlaceGenerations(persons, relations, places, rootId).slice();
+    var rels = relations.concat(added);
 
-    function hasLink(a, b) {
-      for (var i = 0; i < rels.length; i++) {
-        var r = rels[i];
-        if ((r.from === a && r.to === b) || (r.from === b && r.to === a)) return true;
-      }
-      return false;
+    // 2) 同地点同排行、一男一女 → 补配偶
+    function genderOfSeg(s) {
+        s = String(s || '');
+        if (/[公爹叔伯爷舅哥弟]/.test(s)) return 'm';
+        if (/[婆妈娘婶姨奶姐妹]/.test(s)) return 'f';
+        return '';
     }
-
-    // 某人的某个目标称谓的全部候选边
-    function candidatesFor(p, target) {
-      var out = [];
-      directWords.forEach(function (w) {
-        var s = matchStrength(w, target);
-        if (s > 0 && !hasLink(p.id, rootId)) {
-          out.push({ edge: { from: p.id, to: rootId, type: w }, strength: s, hops: 1, resolved: w });
-        }
-      });
-      persons.forEach(function (q) {
-        if (q.id === p.id || q.id === rootId || hasLink(p.id, q.id)) return;
-        var lab = labels[q.id];
-        if (!lab || !lab.exact || !lab.key) return;
-        vocab.forEach(function (w) {
-          var resolved = resolveRuleVariant(lab.key, w, p, pmap[rootId]);
-          if (resolved === null) return;
-          var s = matchStrength(resolved, target);
-          if (s > 0) out.push({ edge: { from: p.id, to: q.id, type: w }, strength: s, hops: 2, qid: q.id, resolved: resolved });
+    function rankPrefix(s) {
+        var m = /^(\d+|[〇零一二三四五六七八九十廿卅两]+|[a-zA-Z]+)/.exec(String(s || '').trim());
+        if (!m) return null;
+        var t = m[1];
+        if (/^\d+$/.test(t)) return parseInt(t, 10);
+        var map = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'廿':20,'卅':30,'两':2,'零':0,'〇':0 };
+        return map[t] !== undefined ? map[t] : t;
+    }
+    function genOf(p) {
+        var d = titleDelta(p.name);
+        if (typeof d === 'number' && d !== 0) return d;
+        if (/公|婆/.test(p.name)) return -2;
+        if (/爹|叔|姑|妈|娘/.test(p.name)) return -1;
+        return null;
+    }
+    function hasPair(a, b) {
+        return rels.some(function (r) {
+            return r.type === '配偶' && ((r.from === a && r.to === b) || (r.from === b && r.to === a));
         });
-      });
-      return out;
     }
-
-    // 选边：匹配强度 > 跳数多（挂到中间人下面，世系线更正） > 排行定长幼
-    function pickBest(list, p) {
-      if (!list.length) return null;
-      var best = null;
-      list.forEach(function (c) {
-        if (!best || c.strength > best.strength ||
-            (c.strength === best.strength && c.hops > best.hops)) best = c;
-      });
-      // 排行只在「并列候选全是同一个人的兄弟姐妹词、推出来还是同一称谓」时用——
-      // 否则会把「奶奶」和「姑祖母」这种不同称谓的并列瞎分长幼
-      var tied = list.filter(function (c) {
-        return c.strength === best.strength && c.hops === best.hops;
-      });
-      if (tied.length > 1) {
-        var sib = tied.filter(function (c) { return SIBLING_WORDS[c.edge.type]; });
-        var allSib = sib.length > 1 && sib.length === tied.length &&
-          sib.every(function (c) { return c.qid === sib[0].qid && c.resolved === sib[0].resolved; });
-        if (allSib) {
-          var pr = rankOf(p.name);
-          var qr = sib[0].qid ? rankOf(pmap[sib[0].qid].name) : null;
-          if (pr != null && qr != null) {
-            var older = pr < qr;
-            for (var i = 0; i < sib.length; i++) {
-              if (!!OLDER_WORDS[sib[i].edge.type] === older) return sib[i];
+    places.forEach(function (pl) {
+        var pmap = {};
+        persons.forEach(function (p) {
+            if (p && p.id && p.placeId === pl.id) {
+                var g = genderOfSeg(p.name);
+                var rk = rankPrefix(p.name);
+                // key 不含性别：同地点同排行同辈的男女归到一组，再组内配夫妻
+                var key = (rk == null ? 'x' : rk) + '|' + (genOf(p) == null ? 'x' : genOf(p));
+                (pmap[key] = pmap[key] || []).push(p);
             }
-          }
-        }
-      }
-      return best;
-    }
-
-    var guard = 0;
-    var progress = true;
-    while (progress && guard++ < persons.length + 2) {
-      progress = false;
-      persons.forEach(function (p) {
-        if (p.id === rootId || labels[p.id]) return;
-        // 目标称谓：条目名（剥掉排行前缀）+ 历史手填 titles（未拆的老数据）
-        var targets = [];
-        function addTarget(v) {
-          v = String(v == null ? '' : v).trim();
-          if (!v) return;
-          var b = baseTitle(v);
-          if (b && targets.indexOf(b) < 0) targets.push(b);
-          if (targets.indexOf(v) < 0) targets.push(v);
-        }
-        addTarget(p.name);
-        (p.titles || []).forEach(addTarget);
-        var best = null;
-        targets.forEach(function (t) {
-          var pick = pickBest(candidatesFor(p, t), p);
-          if (pick && (!best || pick.strength > best.strength)) best = pick;
         });
-        if (best) {
-          rels.push(best.edge);
-          added.push(best.edge);
-          recompute();
-          progress = true;
-        }
-      });
-    }
+        Object.keys(pmap).forEach(function (key) {
+            var arr = pmap[key];
+            var males = arr.filter(function (p) { return p.gender === 'm' || genderOfSeg(p.name) === 'm'; });
+            var females = arr.filter(function (p) { return p.gender === 'f' || genderOfSeg(p.name) === 'f'; });
+            var n = Math.min(males.length, females.length);
+            for (var i = 0; i < n; i++) {
+                if (hasPair(males[i].id, females[i].id)) continue;
+                var edge = { from: males[i].id, to: females[i].id, type: '配偶' };
+                added.push(edge);
+                rels.push(edge);
+            }
+        });
+    });
     return added;
   }
 
