@@ -2618,8 +2618,8 @@ function renderPlacePeople(placeId) {
         var badge = '';
         if (p.id === rootId) {
             badge = '<span class="kin-badge">我</span>';
-        } else if (lab) {
-            badge = '<span class="kin-badge' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>';
+        } else {
+            badge = '<span class="kin-badge">' + esc(p.name) + '</span>';
         }
         var bits = [];
         if (p.gender === 'm') bits.push('男'); else if (p.gender === 'f') bits.push('女');
@@ -2646,14 +2646,9 @@ function renderPersonKin(id, box) {
     var html = '';
     if (id === effectiveRootId()) {
         html = '<div class="kin-main">这是「我」——称谓推算的起点（固定为档案第一人）</div>';
-    } else if (lab) {
-        html = '<div class="kin-main"><span class="kin-badge' + (lab.exact ? '' : ' inexact') + '">' + esc(lab.label) + '</span>' +
-            (lab.alias && lab.alias.length ? '<span class="kin-alias">又叫：' + esc(lab.alias.slice(0, 3).join(' · ')) + '</span>' : '') +
-            (lab.path && lab.path.length ? '<span class="kin-path">' + esc(lab.path.join(' → ')) + '</span>' : '') + '</div>';
     } else {
-        html = '<div class="kin-main kin-none">' +
-            (k ? '算不出彼此的称谓：先在「+ 关系」里把人物连起来' : '还没有人物数据：先在地点里添加称谓条目') +
-            '</div>';
+        var person = findPerson(id);
+        html = '<div class="kin-main"><span class="kin-badge">' + esc(person ? person.name : '') + '</span></div>';
     }
     box.innerHTML = html;
     renderMutualTitles(id, lab, box);
@@ -3407,7 +3402,7 @@ function renderGraph() {
 
     // 名框：姓名在框内居中，称谓在框下；「我」加一圈光晕标出圆心
     g.nodes.forEach(function (n) {
-        var tip = n.name + (n.title ? ' · ' + n.title : '');
+        var tip = n.name;
         if (n.alias && n.alias.length) tip += '（又叫 ' + n.alias.join('、') + '）';
         tip += n.isRoot ? ' · 圆心' : (n.unreach ? ' · 未连通' : ' · ' + graphGenText(n.gen));
         var top = n.y - n.h / 2;
@@ -3422,10 +3417,6 @@ function renderGraph() {
             '" height="' + r1(n.h) + '" rx="8"></rect>' +
             '<text class="g-node-name" x="' + r1(n.x) + '" y="' + r1(n.y + 4) + '">' +
             esc(n.nameText || n.name) + '</text>');
-        if (n.titleText) {
-            parts.push('<text class="g-node-title" x="' + r1(n.x) + '" y="' +
-                r1(top + n.h + 15) + '">' + esc(n.titleText) + '</text>');
-        }
         parts.push('</g>');
     });
 
