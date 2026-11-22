@@ -257,6 +257,8 @@ ok(/pointerdown/.test(appSrc) && /pointermove/.test(appSrc), '关系图应支持
 ok(/pointerup/.test(appSrc), '拖动结束应处理 pointerup（含惯性）');
 ok(/addEventListener\('dblclick'/.test(appSrc), '关系图应支持双击放大/还原');
 ok(!/attachPlaceGenerations/.test(appSrc), '「同址辈分挂靠」按钮已移除，功能并入「补齐关系网」');
+ok(/function showRelForm\(idx, fromId\)/.test(appSrc), 'showRelForm 应支持预填关系主体 fromId');
+ok(/jumpToPerson\(id\);[\s\S]{0,120}showRelForm\(null, id\)/.test(appSrc), '点击节点应同时定位地图并打开添加关系表单');
 
 // 父子线画成树状折线（径向出→横向拐→径向进），不是一条放射直线
 var treeLineG = (function () {

@@ -2764,10 +2764,12 @@ function deleteRelation(idx) {
     if (state.selectedId) openPlaceCard(state.selectedId);
 }
 
-function showRelForm(idx) {
+// fromId：从关系图点人物进来时，预填「关系主体」为这个人
+function showRelForm(idx, fromId) {
     closePlaceModal(); // 两个独立窗口互斥
-    var placeId = state.selectedId;
-    if (!placeId) return;
+    var focus = fromId ? findPerson(fromId) : null;
+    var placeId = state.selectedId || (focus ? focus.placeId : null);
+    if (!placeId && !focus) return;
     var editing = Number.isInteger(idx) && idx >= 0 && state.data.relations[idx];
     state.relEditingIdx = editing ? idx : null;
     var fromSel = document.getElementById('relFrom');
@@ -2785,14 +2787,25 @@ function showRelForm(idx) {
         toSel.value = state.data.relations[idx].to;
     } else {
         var here = Places.peopleAt(state.data, placeId);
-        if (here.length) fromSel.value = here[0].id;
-        var other = null;
-        if (here.length > 1) {
-            other = here[1];
+        if (focus) {
+            // 关系图点进来：点击的人固定在「主体 from」，客体默认选同地点的其他人
+            fromSel.value = focus.id;
+            var peer = null;
+            here.forEach(function (p) { if (!peer && p.id !== focus.id) peer = p; });
+            if (!peer) {
+                state.data.persons.forEach(function (p) { if (!peer && p.id !== focus.id) peer = p; });
+            }
+            if (peer) toSel.value = peer.id;
         } else {
-            state.data.persons.forEach(function (p) { if (!other && p.id !== fromSel.value) other = p; });
+            if (here.length) fromSel.value = here[0].id;
+            var other = null;
+            if (here.length > 1) {
+                other = here[1];
+            } else {
+                state.data.persons.forEach(function (p) { if (!other && p.id !== fromSel.value) other = p; });
+            }
+            if (other) toSel.value = other.id;
         }
-        if (other) toSel.value = other.id;
     }
     typeSel.innerHTML = Kinship.TYPE_GROUPS.map(function (g) {
         return '<optgroup label="' + esc(g.group) + '">' +
@@ -3436,12 +3449,11 @@ function renderGraph() {
         var node = g.nodes.filter(function (n) { return n.id === id; })[0];
         gEl.addEventListener('click', function () {
             if (graphView && graphView.moved) return;
-            if (node && node.isRoot) {
-                toast('圆心就是「我」');
-                return;
-            }
             closeGraph();
-            jumpToPerson(id);
+            if (!node || !node.isRoot) {
+                jumpToPerson(id);      // 仍定位到地图并打开地点卡（「我」没有地点，跳过）
+            }
+            showRelForm(null, id);     // 同时打开添加关系表单，主体预填为点击的人
         });
         gEl.addEventListener('mouseenter', function () { highlightPath(id, k); });
         gEl.addEventListener('mouseleave', clearHighlight);
