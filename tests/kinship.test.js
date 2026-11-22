@@ -495,6 +495,20 @@ ok(br.every(function (r) {
     return a && b && a.placeId === b.placeId; // 全部同地点
 }), '补齐的边都在同一地点内（不跨地点）');
 ok(br.some(function (r) { return r.type === '配偶'; }), '同地点同排行异性补配偶（15公↔15婆）');
+// 挂靠方向正确：祖辈(公)当父亲，不会把父辈(娘)当成祖辈的母亲；同辈长辈男性优先
+var gp = [
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'gg', name: '6公', gender: 'm', placeId: 'pG' },
+    { id: 'gn', name: '6婆', gender: 'f', placeId: 'pG' },
+    { id: 'low', name: '8娘', gender: 'f', placeId: 'pG' },
+    { id: 'low2', name: '4爹', gender: 'm', placeId: 'pG' }
+];
+var gAdds = K.buildRelations(gp, [], 'me');
+// 8娘/4爹(父辈)应挂到 6公(祖辈男) 当父亲，而不是反过来
+ok(gAdds.some(function (r) { return r.from === 'gg' && r.to === 'low' && r.type === '父亲'; }),
+    '8娘挂到6公下当父亲（方向正确、男性长辈优先）');
+ok(!gAdds.some(function (r) { return r.from === 'low' && (r.to === 'gg' || r.to === 'gn'); }),
+    '不会把8娘(父辈)补成6公/6婆(祖辈)的母亲');
 var again = K.buildRelations(bp, br, 'me');
 eq(again.length, 0, '再次调用没有可补的（幂等）');
 

@@ -1233,17 +1233,24 @@
 
     function guessGen(p) {
       if (p.id === rootId) return 0;
-      var l = labels[p.id];
-      if (l && typeof l.gen === 'number') return l.gen;
+      // 只按称呼（名字/titles 关键字）定世，不看关系边算出的 gen——
+      // 关系 type 是名字原值时会算出 gen=0（平辈），导致祖辈被当晚辈、长辈方向颠倒。
       var srcs = (p.titles || []).concat([p.name]);
       for (var i = 0; i < srcs.length; i++) {
         var s = String(srcs[i] == null ? '' : srcs[i]).trim();
         if (!s) continue;
         var d = titleDelta(s);
         if (typeof d === 'number' && d !== 0) return d;
-        if (/公|婆/.test(s)) return -2;
-        if (/爹|叔|姑|妈|娘/.test(s)) return -1;
+        if (/曾祖|高祖|太爷|太婆|老祖/.test(s)) return -3;
+        if (/公|婆|祖|爷|奶/.test(s)) return -2;          // 祖辈（一世）
+        if (/爹|叔|姑|妈|娘|婶|姨|舅|伯|爸|父|母/.test(s)) return -1; // 父辈（二世）
+        if (/哥|姐|弟|妹|嫂/.test(s)) return 0;        // 同辈
+        if (/孙/.test(s)) return 2;                       // 孙辈
+        if (/儿|女|侄|甥/.test(s)) return 1;              // 晚辈
       }
+      // 名字认不出时才退回关系边算的 gen
+      var l = labels[p.id];
+      if (l && typeof l.gen === 'number' && l.gen !== 0) return l.gen;
       return null;
     }
 
@@ -1275,12 +1282,26 @@
       var highest = people[0].gen;
       people.forEach(function (p) {
         if (p.gen === highest) return;
-        // 优先挂到刚好高一辈；没有就挂到本地点最高辈（用户选择的「逐级挂高一辈」）
+        // 优先挂到刚好高一辈；同辈长辈里男性优先（当父亲）；没有就挂到本地点最高辈
         var target = null;
-        for (var i = people.length - 1; i >= 0; i--) {
-          if (people[i].gen === p.gen - 1) { target = people[i]; break; }
+        var elders = people.filter(function (e) { return e.gen === p.gen - 1; });
+        if (elders.length) {
+            elders.sort(function (a, b) {
+                var ga = pmap[a.id] && pmap[a.id].gender === 'm' ? 0 : 1;
+                var gb = pmap[b.id] && pmap[b.id].gender === 'm' ? 0 : 1;
+                return ga - gb; // 男性(父亲)优先
+            });
+            target = elders[0];
         }
-        if (!target) target = people[0];
+        if (!target) {
+            // 最高辈里也优先男性
+            var tops = people.filter(function (e) { return e.gen === highest; }).sort(function (a, b) {
+                var ga = pmap[a.id] && pmap[a.id].gender === 'm' ? 0 : 1;
+                var gb = pmap[b.id] && pmap[b.id].gender === 'm' ? 0 : 1;
+                return ga - gb;
+            });
+            target = tops[0];
+        }
         if (!target || target.id === p.id || hasRelation(target.id, p.id)) return;
         var person = pmap[p.id];
         var elder = pmap[target.id];
