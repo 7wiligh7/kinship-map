@@ -22,17 +22,15 @@ var GraphLayout = (function () {
         try { require('./kinship.js'); K = globalThis.Kinship; } catch (e) { K = null; }
     }
     function rankOf(name) { return K && K.rankOf ? K.rankOf(name) : null; }
+    function rankNum(info, id) { return info[id] && info[id].rank != null ? info[id].rank : 999; }
 
-    // 名字关键字定世：称谓是 name 原值（15公/三叔/4爹）时用的兜底。
-    // 返回相对「我」的代数偏移：公/婆=祖辈(-2)、爹/叔/姑/妈/娘/娘=父辈(-1)；认不出返回 null。
-    function nameGenOffset(name) {
-        var s = String(name == null ? '' : name);
-        // 祖辈（上两代）
-        if (/(爷爷|奶奶|外公|外婆|祖父|祖母|公|婆|大爷|大婆)/.test(s)) return -2;
-        // 父辈（上一代）
-        if (/(爸爸|妈妈|父亲|母亲|爹|叔|姑|妈|娘|婶|姨|舅|伯)/.test(s)) return -1;
-        return null;
+    // 名字定世与 kinship.js 共用一份，避免两处关键字集不一致（老公/姑娘/姑爷等）。
+    function nameGenOffset(name, titles) {
+        return K && K.genFromName ? K.genFromName(name, titles) : null;
     }
+
+    // 数值保留一位小数，r1 / r1v 共用这一份
+    function round1(v) { return Math.round(v * 10) / 10; }
 
     var BOX_H = 36;          // 名框高度
     var TITLE_DY = 52;       // 称谓文字基线（相对名框顶部）
@@ -946,7 +944,7 @@ var GraphLayout = (function () {
             boxH: BOX_H
         };
 
-        function r1(v) { return Math.round(v * 10) / 10; }
+        function r1(v) { return round1(v); }
     }
 
     /* ---------- 蛛网/放射布局（radial） ----------
@@ -991,16 +989,16 @@ var GraphLayout = (function () {
             people[p.id] = p;
             var l = labels[p.id];
             var title = l ? (l.label || '') : '';
-            var titleText = title ? fitText(title, 10, 160) : '';
-            var titleW = titleText ? textWidth(titleText, 10) + 10 : 0;
+            // 框下黄色称谓已不再显示，宽度只按名框算——不可见的长路径称谓
+            // （如「9叔的父亲的儿女」）不应撑大半径/扇区/推开间距。
             var w = Math.min(R_MAX_W, Math.max(R_MIN_W, textWidth(p.name, 12) + 24));
             info[p.id] = {
                 id: p.id,
                 name: p.name || '',
                 nameText: fitText(p.name || '', 12, w - 12),
                 title: title,
-                titleText: titleText,
-                titleW: Math.max(w, titleW),
+                titleText: '',
+                titleW: w,
                 alias: l && l.alias ? l.alias : [],
                 titles: p.titles || [],
                 labelGen: l && typeof l.gen === 'number' ? l.gen : null,
@@ -1421,9 +1419,9 @@ var GraphLayout = (function () {
                 var minGen = Math.min.apply(null, ids.map(genOf));
                 var top = ids.filter(function (id) { return genOf(id) === minGen; });
                 var male = top.filter(function (id) { return info[id].gender === 'm'; });
-                if (male.length) return male.sort(function (a, b) { return info[a].rank - info[b].rank || info[a].order - info[b].order; })[0];
+                if (male.length) return male.sort(function (a, b) { return rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order; })[0];
                 var female = top.filter(function (id) { return info[id].gender === 'f'; });
-                if (female.length) return female.sort(function (a, b) { return info[a].rank - info[b].rank || info[a].order - info[b].order; })[0];
+                if (female.length) return female.sort(function (a, b) { return rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order; })[0];
                 // 最高辈没有男女标注：往下推，选排行最大的男性（rank 最小，null 排最后）
                 var males = ids.filter(function (id) { return info[id].gender === 'm'; });
                 males.sort(function (a, b) {
@@ -1455,7 +1453,7 @@ var GraphLayout = (function () {
                 placeRoots.push(root);
                 // 其余人按 gen 从小到大（长辈先挂）排序
                 var rest = ids.filter(function (id) { return id !== root; }).sort(function (a, b) {
-                    return genOf(a) - genOf(b) || info[a].rank - info[b].rank || info[a].order - info[b].order;
+                    return genOf(a) - genOf(b) || rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order;
                 });
                 var attached = {};
                 attached[root] = true;
@@ -1468,7 +1466,7 @@ var GraphLayout = (function () {
                     }).sort(function (a, b) {
                         var da = myGen - genOf(a), db = myGen - genOf(b);
                         if (da !== db) return da - db; // 优先恰好高一辈
-                        return (info[a].rank == null ? 999 : info[a].rank) - (info[b].rank == null ? 999 : info[b].rank) || info[a].order - info[b].order;
+                        return rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order;
                     });
                     cand = elders[0] || root;
                     pTreeParent[id] = cand;
@@ -1491,7 +1489,9 @@ var GraphLayout = (function () {
                 var cursor = center - span / 2;
                 kids.forEach(function (k) {
                     var share = total ? span * (pWeight[k] / total) : 0;
-                    placeSubtree(k, cursor + share / 2, Math.max(0.02, share));
+                    // 不再给最小扇区设下限：子节点极多时下限之和会超过父 span，
+                    // 导致跨组角度重叠。packRing 会负责把同圈名框推开。
+                    placeSubtree(k, cursor + share / 2, Math.max(0, share));
                     cursor += share;
                 });
             }
@@ -1905,7 +1905,7 @@ var GraphLayout = (function () {
         };
     }
 
-    function r1v(v) { return Math.round(v * 10) / 10; }
+    function r1v(v) { return round1(v); }
 
     var CN_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
     function chineseNum(n) {

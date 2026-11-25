@@ -217,10 +217,14 @@ var Places = (function () {
                 var seg = segs[si];
                 var hasPrefix = rankPrefix(seg);
                 var fullName = hasPrefix ? seg : (prefix + seg);
-                var np = addPerson(d, {
-                    name: fullName, gender: genderOfSeg(fullName), age: null,
-                    titles: [], placeId: p.placeId
-                });
+                // 同地点已有同名人物就直接复用，不再造第二个（避免重复人物）
+                var np = peopleAt(d, p.placeId).filter(function (x) { return x.name === fullName; })[0];
+                if (!np) {
+                    np = addPerson(d, {
+                        name: fullName, gender: genderOfSeg(fullName), age: null,
+                        titles: [], placeId: p.placeId
+                    });
+                }
                 d.relations = d.relations || [];
                 // 相邻异性段建配偶关系
                 if (np.gender && prev.gender && np.gender !== prev.gender) {

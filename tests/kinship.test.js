@@ -512,5 +512,61 @@ ok(!gAdds.some(function (r) { return r.from === 'low' && (r.to === 'gg' || r.to 
 var again = K.buildRelations(bp, br, 'me');
 eq(again.length, 0, '再次调用没有可补的（幂等）');
 
+/* ===== H1/M1/M3/M4 回归 ===== */
+
+// M1：名字定世不能按关键字误判
+eq(K.genFromName('老公'), 0, '老公是同辈，不因含「公」定成祖辈');
+eq(K.genFromName('老婆'), 0, '老婆是同辈，不因含「婆」定成祖辈');
+eq(K.genFromName('姑爷'), 1, '姑爷=女婿，晚辈，不因含「爷」定成祖辈');
+eq(K.genFromName('大爷'), -1, '大爷=伯父，父辈，不因含「爷」定成祖辈');
+eq(K.genFromName('姑娘'), 1, '姑娘=女儿，晚辈，不因含「娘」定成父辈');
+eq(K.genFromName('新娘'), 0, '新娘=儿媳，同辈，不因含「娘」定成父辈');
+eq(K.genFromName('6公'), -2, '排行+祖辈称谓仍正确定世');
+eq(K.genFromName('3哥'), 0, '哥姐弟妹是同辈');
+eq(K.genFromName('4儿'), 1, '儿女是晚辈');
+
+// H1：同地点同排行的兄妹/儿女/认不出的人不能被配成夫妻
+var h1p = [
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'b3', name: '3哥', gender: 'm', placeId: 'pH' },
+    { id: 's3', name: '3妹', gender: 'f', placeId: 'pH' },
+    { id: 'son4', name: '4儿', gender: 'm', placeId: 'pH' },
+    { id: 'dau4', name: '4女', gender: 'f', placeId: 'pH' },
+    { id: 'u1', name: '张三', gender: 'm', placeId: 'pH' },
+    { id: 'u2', name: '李四', gender: 'f', placeId: 'pH' }
+];
+var h1adds = K.buildRelations(h1p, [], 'me');
+ok(!h1adds.some(function (r) { return r.type === '配偶'; }),
+    '3哥/3妹、4儿/4女、名字认不出的人都不会被配成夫妻');
+var okp = [
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'gg', name: '6公', gender: 'm', placeId: 'pO' },
+    { id: 'gp', name: '6婆', gender: 'f', placeId: 'pO' }
+];
+ok(K.buildRelations(okp, [], 'me').some(function (r) { return r.type === '配偶'; }),
+    '真正的成对称谓 6公/6婆 仍会配成夫妻');
+
+// M4：全局防重——已有配偶的人不会被再配一次
+var m4p = [
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'g7', name: '7公', gender: 'm', placeId: 'pM' },
+    { id: 'p7', name: '7婆', gender: 'f', placeId: 'pM' },
+    { id: 'elsewhere', name: '5婆', gender: 'f', placeId: 'pOther' }
+];
+var m4rels = [{ from: 'g7', to: 'elsewhere', type: '配偶' }];
+var m4adds = K.buildRelations(m4p, m4rels, 'me');
+ok(!m4adds.some(function (r) { return r.type === '配偶'; }),
+    '7公已有配偶时，不会再和本地的 7婆 配一次（无重婚）');
+
+// M3：跨辈挂靠的 type 要反映真实辈差
+var m3p = [
+    { id: 'me', name: '我', gender: 'm', placeId: null },
+    { id: 'anc', name: '6公', gender: 'm', placeId: 'pG' },
+    { id: 'kid', name: '9儿', gender: 'm', placeId: 'pG' }
+];
+var m3adds = K.buildRelations(m3p, [], 'me');
+ok(m3adds.some(function (r) { return r.from === 'anc' && r.to === 'kid' && r.type === '曾祖父'; }),
+    '6公(祖辈)到9儿(晚辈)差三辈，type 应为曾祖父而不是父亲');
+
 console.log('pass=' + pass + ' fail=' + fail);
 process.exit(fail ? 1 : 0);

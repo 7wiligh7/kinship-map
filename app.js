@@ -2291,8 +2291,7 @@ function addPlace() {
 // 打开地点弹窗（新增 / 编辑）：地点信息 + 该地点的称谓条目（姓名/性别/年龄）都在这里
 function openPlaceModal(placeId, latlng) {
     hideRelForm(); // 两个独立窗口互斥
-    // 打开编辑器前先兜底拆分合写称谓（含 / 的项），确保列表里不再出现「6公/婆」这种
-    if (state.data && Places.splitCombinedNames(state.data)) saveData();
+    // 合写称谓的拆分放到确认保存时做：打开编辑器本身不改数据，取消也不该留副作用
     state.editingPlaceId = placeId || null;
     pendingLatLng = latlng || null;
     var pl = placeId ? Places.findPlace(state.data, placeId) : null;
@@ -2372,6 +2371,7 @@ function confirmPlace() {
         pl.name = name;
         pl.note = note;
         syncPlaceEntries(pl.id, entries);
+        if (Places.splitCombinedNames(state.data)) markUserModified(); // 拆分合写称谓，真正保存时才生效
         saveData();
         renderAll(false);
         markUserModified();
@@ -2988,7 +2988,7 @@ function autoFillRelations() {
     var rootId = effectiveRootId();
     if (!rootId) { toast('还没有人物数据'); return; }
     var adds = Kinship.buildRelations(state.data.persons, state.data.relations, rootId);
-    if (!adds.length) { toast('称谓都已连进关系网，没有可补的了'); return; }
+    if (!adds.length) { toast('同地点的关系已经补齐，没有可补的了'); return; }
     adds.forEach(function (r) { state.data.relations.push(r); });
     saveData();
     markUserModified();
@@ -2998,8 +2998,6 @@ function autoFillRelations() {
     toast('已补齐 ' + adds.length + ' 条关系');
 }
 
-// 同址辈分挂靠：同一地点里不同辈分的人，逐级挂到刚好高一辈的人下面；
-// 中间缺辈就挂到该地点最高辈。生成的是真实关系，会影响称谓推算与导出。
 function graphGenText(gen) {
     if (gen == null) return '辈分未明';
     if (gen < 0) return '高 ' + (-gen) + ' 辈';
@@ -3606,8 +3604,9 @@ var ACTIONS = {
 };
 
 function dispatchAction(el, e) {
-    var fn = ACTIONS[el.getAttribute('data-act')];
-    if (fn) fn(el, e);
+    var act = el.getAttribute('data-act');
+    if (!Object.prototype.hasOwnProperty.call(ACTIONS, act)) return;
+    ACTIONS[act](el, e);
 }
 
 document.addEventListener('click', function (e) {

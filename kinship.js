@@ -1105,6 +1105,37 @@
     return null;
   }
 
+  // 名字定世的例外词：这些词含「公/婆/爷/娘」等关键字，但辈分不能按关键字算。
+  // 老公/老婆=同辈，姑爷=女婿(晚辈)，大爷=伯父(父辈)，姑娘=女儿(晚辈)，新娘=儿媳(同辈)。
+  var NAME_GEN_EXCEPTIONS = {
+    '老公': 0, '老婆': 0, '丈夫': 0, '妻子': 0, '配偶': 0, '新郎': 0, '新娘': 0,
+    '姑爷': 1, '姑娘': 1, '大爷': -1, '公公': -1, '婆婆': -1
+  };
+
+  // 统一的「按名字定世」：返回相对我的代数偏移（负=长辈，0=同辈，正=晚辈），
+  // 认不出返回 null。称谓词表优先，其次例外词，再按剥掉排行后的称谓关键字。
+  // kinship.js 与 graphlayout.js 共用这一份，避免两处关键字集不一致。
+  function genFromName(name, titles) {
+    var srcs = (titles || []).concat([name]);
+    for (var i = 0; i < srcs.length; i++) {
+      var s = String(srcs[i] == null ? '' : srcs[i]).trim();
+      if (!s) continue;
+      var d = titleDelta(s);
+      if (typeof d === 'number') return d;
+      if (NAME_GEN_EXCEPTIONS[s] !== undefined) return NAME_GEN_EXCEPTIONS[s];
+      var base = baseTitle(s);
+      if (NAME_GEN_EXCEPTIONS[base] !== undefined) return NAME_GEN_EXCEPTIONS[base];
+      // 用包含匹配（伯父/三叔/15公这类复合称谓都能认出）；例外词已在上面拦掉。
+      if (/曾祖|高祖|太爷|太婆|老祖/.test(base)) return -3;
+      if (/(爷爷|奶奶|外公|外婆|祖父|祖母|公|婆|祖)/.test(base)) return -2;
+      if (/(爸爸|妈妈|父亲|母亲|爹|叔|姑|妈|娘|婶|姨|舅|伯|爸|父|母)/.test(base)) return -1;
+      if (/(哥|姐|弟|妹|嫂)/.test(base)) return 0;
+      if (/(孙)/.test(base)) return 2;
+      if (/(儿|女|侄|甥)/.test(base)) return 1;
+    }
+    return null;
+  }
+
   // 去掉排行前缀后的称谓（"23公" → "公"）
   function baseTitle(name) { return splitRank(name).base; }
 
@@ -1180,26 +1211,30 @@
         var map = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'廿':20,'卅':30,'两':2,'零':0,'〇':0 };
         return map[t] !== undefined ? map[t] : t;
     }
-    function genOf(p) {
-        var d = titleDelta(p.name);
-        if (typeof d === 'number' && d !== 0) return d;
-        if (/公|婆/.test(p.name)) return -2;
-        if (/爹|叔|姑|妈|娘/.test(p.name)) return -1;
-        return null;
+    // 能成对出现在合写称谓里的长辈词（公/婆、爹/妈…）。哥姐弟妹、儿女、侄甥、
+    // 孙子孙女以及名字认不出的人都不参与自动配偶配对——他们本来就不是夫妻关系。
+    var SPOUSE_WORD = { '公':1, '婆':1, '爷':1, '奶':1, '祖父':1, '祖母':1,
+        '爹':1, '妈':1, '爸':1, '父':1, '母':1, '叔':1, '婶':1, '舅':1, '姨':1, '伯':1 };
+    function spouseWord(p) {
+        var base = baseTitle(p.name);
+        return SPOUSE_WORD[base] ? base : null;
     }
-    function hasPair(a, b) {
+    function genOf(p) { return genFromName(p.name, p.titles); }
+    function hasSpouse(id) {
         return rels.some(function (r) {
-            return r.type === '配偶' && ((r.from === a && r.to === b) || (r.from === b && r.to === a));
+            return r.type === '配偶' && (r.from === id || r.to === id);
         });
     }
     places.forEach(function (pl) {
         var pmap = {};
         persons.forEach(function (p) {
             if (p && p.id && p.placeId === pl.id) {
-                var g = genderOfSeg(p.name);
                 var rk = rankPrefix(p.name);
-                // key 不含性别：同地点同排行同辈的男女归到一组，再组内配夫妻
-                var key = (rk == null ? 'x' : rk) + '|' + (genOf(p) == null ? 'x' : genOf(p));
+                var gen = genOf(p);
+                // 只有「可成对的成对称谓 + 明确的同辈分」才进配对组。
+                // 认不出辈分的人不再落进 'x' 组瞎配夫妻。
+                if (rk == null || gen == null || !spouseWord(p)) return;
+                var key = rk + '|' + gen;
                 (pmap[key] = pmap[key] || []).push(p);
             }
         });
@@ -1209,7 +1244,8 @@
             var females = arr.filter(function (p) { return p.gender === 'f' || genderOfSeg(p.name) === 'f'; });
             var n = Math.min(males.length, females.length);
             for (var i = 0; i < n; i++) {
-                if (hasPair(males[i].id, females[i].id)) continue;
+                // 全局防重：任一方已在别处有配偶就不再配（避免重婚）
+                if (hasSpouse(males[i].id) || hasSpouse(females[i].id)) continue;
                 var edge = { from: males[i].id, to: females[i].id, type: '配偶' };
                 added.push(edge);
                 rels.push(edge);
@@ -1233,20 +1269,14 @@
 
     function guessGen(p) {
       if (p.id === rootId) return 0;
-      // 只按称呼（名字/titles 关键字）定世，不看关系边算出的 gen——
-      // 关系 type 是名字原值时会算出 gen=0（平辈），导致祖辈被当晚辈、长辈方向颠倒。
+      // 只按名字/titles 定世，不看关系边算出的 gen——关系 type 是名字原值时
+      // 会算出 gen=0（平辈），导致祖辈被当晚辈。与布局层共用 genFromName。
+      var g = genFromName(p.name, p.titles);
+      if (g != null) return g;
       var srcs = (p.titles || []).concat([p.name]);
       for (var i = 0; i < srcs.length; i++) {
         var s = String(srcs[i] == null ? '' : srcs[i]).trim();
-        if (!s) continue;
-        var d = titleDelta(s);
-        if (typeof d === 'number' && d !== 0) return d;
         if (/曾祖|高祖|太爷|太婆|老祖/.test(s)) return -3;
-        if (/公|婆|祖|爷|奶/.test(s)) return -2;          // 祖辈（一世）
-        if (/爹|叔|姑|妈|娘|婶|姨|舅|伯|爸|父|母/.test(s)) return -1; // 父辈（二世）
-        if (/哥|姐|弟|妹|嫂/.test(s)) return 0;        // 同辈
-        if (/孙/.test(s)) return 2;                       // 孙辈
-        if (/儿|女|侄|甥/.test(s)) return 1;              // 晚辈
       }
       // 名字认不出时才退回关系边算的 gen
       var l = labels[p.id];
@@ -1272,11 +1302,14 @@
 
     var added = [];
     placeIds.forEach(function (pid) {
-      var people = persons.filter(function (p) {
-        return p && p.id && p.id !== rootId && p.placeId === pid && guessGen(p) != null;
-      }).map(function (p) {
-        return { id: p.id, gender: p.gender, gen: guessGen(p) };
-      }).sort(function (a, b) { return a.gen - b.gen; });
+      var people = [];
+      persons.forEach(function (p) {
+        if (!p || !p.id || p.id === rootId || p.placeId !== pid) return;
+        var gen = guessGen(p); // 每人只算一次（原来 filter+map 各算一遍）
+        if (gen == null) return;
+        people.push({ id: p.id, gender: p.gender, gen: gen });
+      });
+      people.sort(function (a, b) { return a.gen - b.gen; });
       if (people.length < 2) return;
 
       var highest = people[0].gen;
@@ -1303,9 +1336,13 @@
             target = tops[0];
         }
         if (!target || target.id === p.id || hasRelation(target.id, p.id)) return;
-        var person = pmap[p.id];
         var elder = pmap[target.id];
-        var type = elder && elder.gender === 'f' ? '母亲' : '父亲';
+        // type 要反映实际辈差：差一辈=父母，差两辈=祖父母，再往上=曾祖父母
+        var gap = p.gen - target.gen;
+        var female = elder && elder.gender === 'f';
+        var type = gap >= 3 ? (female ? '曾祖母' : '曾祖父')
+            : gap === 2 ? (female ? '祖母' : '祖父')
+            : (female ? '母亲' : '父亲');
         var edge = { from: target.id, to: p.id, type: type };
         added.push(edge);
         rels.push(edge); // 让同一批次里后续判断也看到新关系
@@ -1329,6 +1366,7 @@
     namesOf: namesOf,
     rankOf: rankOf,
     titleDelta: titleDelta,
+    genFromName: genFromName,
     baseTitle: baseTitle,
     matchStrength: matchStrength,
     buildRelations: buildRelations,

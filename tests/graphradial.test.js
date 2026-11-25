@@ -355,7 +355,8 @@ var rootEdgeTargets = gpG.edges.filter(function (e) {
 }).map(function (e) { return e.title; });
 ok(rootEdgeTargets.indexOf('15公') >= 0 || gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '15公'; }),
     '地点A的根（15公）应连一条线到「我」');
-ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三叔'; }), '地点B的根（三叔）应连到「我」');
+ok(gpG.edges.some(function (e) { return e.kind === 'kin' && (e.title === '三叔' || e.title === '9叔'); }),
+    '地点B的根应连到「我」（三叔无排行数字，null→999 后由 9叔 当根）');
 ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三婆'; }), '地点C的根（只有女性三婆）应连到「我」');
 // 同辈同环：同为最高辈的 15公/三婆 半径相同
 ok(a1 && c1 && Math.abs(a1.r - c1.r) < 1, '同辈（15公/三婆）应在同一环（半径相同）');
@@ -447,6 +448,36 @@ var spEdges = spG.edges.filter(function (e) { return e.kind === 'spouse'; });
 ok(spEdges.length === 1, '同地点同排行的 7公/7婆 自动画一条配偶线（实际 ' + spEdges.length + '）');
 var s1 = nodeOfG(spG, 's1'), s2 = nodeOfG(spG, 's2');
 ok(s1 && s2 && dist(s1, s2) < 120, '夫妻应摆相邻（实际距离 ' + dist(s1, s2).toFixed(0) + '）');
+
+// M2：框下黄色称谓已删除，不可见的长路径称谓不应撑大画布
+var m2p = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'g', name: '9叔', gender: 'm', age: null, titles: [], placeId: 'pM2' }
+];
+var m2short = GraphLayout.radial({
+    persons: m2p, relations: [], labels: { g: { label: '9叔', gen: -1 } },
+    rootId: 'me', groupByPlace: true
+});
+var m2long = GraphLayout.radial({
+    persons: m2p, relations: [], labels: { g: { label: '9叔的父亲的儿女的孙子', gen: -1 } },
+    rootId: 'me', groupByPlace: true
+});
+ok(m2short.width === m2long.width && m2short.height === m2long.height,
+    '不可见的长路径称谓不影响画布尺寸（' + m2short.width + ' vs ' + m2long.width + '）');
+
+// L1：布局层与推算层共用同一份定世，老公/姑娘不再被误判
+var l1p = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'h', name: '老公', gender: 'm', age: null, titles: [], placeId: 'pL1' },
+    { id: 'd', name: '姑娘', gender: 'f', age: null, titles: [], placeId: 'pL1' }
+];
+var kL1 = Kinship.compute('me', l1p, []);
+var l1g = GraphLayout.radial({
+    persons: l1p, relations: [], labels: kL1.labels, rootId: 'me', groupByPlace: true
+});
+var l1h = nodeOfG(l1g, 'h'), l1d = nodeOfG(l1g, 'd');
+ok(l1h && l1h.gen === 0 && l1d && l1d.gen === 1,
+    '布局层：老公=同辈、姑娘=晚辈（与 kinship 定世一致）');
 
 console.log('graphradial.test: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

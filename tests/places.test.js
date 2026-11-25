@@ -235,6 +235,21 @@ var tLeft = tCombo.persons.filter(function (p) {
     return p.name.indexOf('/') >= 0 || (p.titles || []).some(function (t) { return t.indexOf('/') >= 0; });
 });
 ok(tLeft.length === 0, '拆分后 name 与 titles 都不再含 /（实际残留 ' + tLeft.length + '）');
+
+// M6：拆分合写称谓时，同地点已有同名人物就复用，不产生重复
+var dupSrc = {
+    version: 3,
+    places: [{ id: 'dp', name: 'D', lat: 1, lng: 2 }],
+    persons: [
+        { id: 'dme', name: '我', gender: 'm', titles: [], placeId: null },
+        { id: 'old', name: '6婆', gender: 'f', titles: [], placeId: 'dp' },
+        { id: 'combo', name: '6公/婆', gender: '', titles: [], placeId: 'dp' }
+    ],
+    relations: [], rootId: 'dme', regions: []
+};
+Places.splitCombinedNames(dupSrc);
+ok(dupSrc.persons.filter(function (p) { return p.name === '6婆'; }).length === 1,
+    '手动加过 6婆 再拆 6公/婆，不应出现第二个 6婆');
 var tX = tCombo.persons.filter(function (p) { return p.name === '6公'; })[0];
 ok(tX && tX.titles.indexOf('6婆') >= 0, 'titles 里的合写展开为 6公/6婆');
 
