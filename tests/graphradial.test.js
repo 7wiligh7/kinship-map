@@ -357,7 +357,25 @@ ok(rootEdgeTargets.indexOf('15公') >= 0 || gpG.edges.some(function (e) { return
     '地点A的根（15公）应连一条线到「我」');
 ok(gpG.edges.some(function (e) { return e.kind === 'kin' && (e.title === '三叔' || e.title === '9叔'); }),
     '地点B的根应连到「我」（三叔无排行数字，null→999 后由 9叔 当根）');
-ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三婆'; }), '地点C的根（只有女性三婆）应连到「我」');
+ok(gpG.edges.some(function (e) { return e.kind === 'kin' && e.title === '三婆'; }), '地点C无男性，退而由最高辈女性三婆连到「我」');
+
+// 连「我」的人选该地点辈分最大的男性，即使有辈分更高的女性；树根仍保持最高辈（父子线不倒挂）
+var maleP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'f6', name: '6婆', gender: 'f', age: null, titles: [], placeId: 'pM' },
+    { id: 'u8', name: '8叔', gender: 'm', age: null, titles: [], placeId: 'pM' }
+];
+var maleG = radialPlaced(maleP, [], 'me');
+var maleKin = maleG.edges.filter(function (e) {
+    return e.kind === 'kin' && (e.x1 === maleG.center.x || e.x2 === maleG.center.x);
+});
+ok(maleKin.length === 1 && maleKin[0].title === '8叔',
+    '连我的是辈分最大的男性 8叔，而不是辈分更高的女性 6婆（实际 ' + maleKin.map(function (e) { return e.title; }).join('、') + '）');
+var f6n = nodeOfG(maleG, 'f6'), u8n = nodeOfG(maleG, 'u8');
+ok(maleG.edges.some(function (e) {
+    return e.kind === 'descent' && f6n && u8n &&
+        Math.abs(e.x1 - f6n.x) < 1 && Math.abs(e.x2 - u8n.x) < 1;
+}), '树内父子线仍是 6婆→8叔（方向不倒挂）');
 // 同辈同环：同为最高辈的 15公/三婆 半径相同
 ok(a1 && c1 && Math.abs(a1.r - c1.r) < 1, '同辈（15公/三婆）应在同一环（半径相同）');
 // 不同地点分占不同扇区：三叔(b) 与 15公(a) 角度差明显

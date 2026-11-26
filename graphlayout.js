@@ -976,7 +976,7 @@ var GraphLayout = (function () {
         var labels = input.labels || {};
         var rootId = input.rootId || null;
         var groupByPlace = !!input.groupByPlace; // 按地点分树：每地点一棵、根连我、各占一扇区
-        var placeRoots = [];  // 按地点分树时各地点树的根（供"根连我"连线用）
+        var placeRoots = [];  // 各地点连「我」的人：该地点辈分最大的男性（无男性才退最高辈树根）
         var placeTreeParent = {}; // 按地点分树时每人对应的父节点（供画"根→子→孙"树线用）
 
         /* ---------- 1. 收集：所有人先进 info（没连通的人也要画在最外圈） ---------- */
@@ -1450,7 +1450,13 @@ var GraphLayout = (function () {
                 var ids = groups[key];
                 var root = pickRoot(ids);
                 groupRoots[key] = root;
-                placeRoots.push(root);
+                // 连「我」的人固定选该地点辈分最大的男性。不直接用树根：
+                // 最高辈只有女性时树根是她，但连我仍要往下选最老的男性；
+                // 树根保持最高辈，父子线方向才不会倒过来。
+                var anchor = ids.filter(function (id) { return info[id].gender === 'm'; }).sort(function (a, b) {
+                    return genOf(a) - genOf(b) || rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order;
+                })[0] || root;
+                placeRoots.push(anchor);
                 // 其余人按 gen 从小到大（长辈先挂）排序
                 var rest = ids.filter(function (id) { return id !== root; }).sort(function (a, b) {
                     return genOf(a) - genOf(b) || rankNum(info, a) - rankNum(info, b) || info[a].order - info[b].order;
@@ -1793,7 +1799,7 @@ var GraphLayout = (function () {
                 });
                 if (!exists) addEdge(pair[0], pair[1], 'spouse', ['配偶'], []);
             });
-            // 每个地点树的根连一条线到中心的「我」（每地点仅此一条）
+            // 每个地点辈分最大的男性连一条线到中心的「我」（每地点仅此一条）
             placeRoots.forEach(function (rid) {
                 if (rid === rootId) return;
                 addEdge(rootId, rid, 'kin', [info[rid].name || '']);
