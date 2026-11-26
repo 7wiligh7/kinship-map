@@ -376,6 +376,35 @@ ok(maleG.edges.some(function (e) {
     return e.kind === 'descent' && f6n && u8n &&
         Math.abs(e.x1 - f6n.x) < 1 && Math.abs(e.x2 - u8n.x) < 1;
 }), '树内父子线仍是 6婆→8叔（方向不倒挂）');
+
+// 姻亲不挂父子线：嫁进来的妈/婶、娶进来的姑丈只通过婚线进入家族
+var inP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'g', name: '6公', gender: 'm', age: null, titles: [], placeId: 'pI' },
+    { id: 'u', name: '叔爹', gender: 'm', age: null, titles: [], placeId: 'pI' },
+    { id: 'w1', name: '4妈', gender: 'f', age: null, titles: [], placeId: 'pI' },
+    { id: 'a', name: '姑妈', gender: 'f', age: null, titles: [], placeId: 'pI' },
+    { id: 'ah', name: '姑丈', gender: 'm', age: null, titles: [], placeId: 'pI' }
+];
+var inR = [
+    { from: 'w1', to: 'u', type: '配偶' }, { from: 'ah', to: 'a', type: '配偶' }
+];
+var inG = radialPlaced(inP, inR, 'me');
+function edgeBetween(kind, fromId, toId) {
+    var a = nodeOfG(inG, fromId), b = nodeOfG(inG, toId);
+    return inG.edges.some(function (e) {
+        if (e.kind !== kind || !a || !b) return false;
+        return (Math.abs(e.x1 - a.x) < 1 && Math.abs(e.x2 - b.x) < 1) ||
+            (Math.abs(e.x1 - b.x) < 1 && Math.abs(e.x2 - a.x) < 1);
+    });
+}
+ok(edgeBetween('descent', 'g', 'u'), '6公→叔爹 血亲父子线保留');
+ok(edgeBetween('descent', 'g', 'a'), '6公→姑妈 血亲父子线保留（嫁出去的女儿仍是血亲）');
+ok(!edgeBetween('descent', 'g', 'w1'), '6公→4妈 姻亲不画父子线（嫁进来的儿媳）');
+ok(!edgeBetween('descent', 'g', 'ah'), '6公→姑丈 姻亲不画父子线（娶进来的）');
+ok(edgeBetween('spouse', 'u', 'w1') && edgeBetween('spouse', 'a', 'ah'),
+    '两条婚线保留（叔爹—4妈、姑妈—姑丈）');
+ok(!edgeBetween('spouse', 'u', 'a'), '叔爹+姑妈同为父辈血亲（兄妹），不自动配夫妻');
 // 同辈同环：同为最高辈的 15公/三婆 半径相同
 ok(a1 && c1 && Math.abs(a1.r - c1.r) < 1, '同辈（15公/三婆）应在同一环（半径相同）');
 // 不同地点分占不同扇区：三叔(b) 与 15公(a) 角度差明显

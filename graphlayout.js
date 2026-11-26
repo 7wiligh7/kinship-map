@@ -22,6 +22,23 @@ var GraphLayout = (function () {
         try { require('./kinship.js'); K = globalThis.Kinship; } catch (e) { K = null; }
     }
     function rankOf(name) { return K && K.rankOf ? K.rankOf(name) : null; }
+
+    // 整词判定血亲：剥掉排行前缀后看「完整称谓」，不能按单字包含——
+    // 「姑妈」带「妈」但仍是血亲（嫁出去的女儿），「4妈/8娘/婶」才是嫁进来的姻亲。
+    // 本项目数据均为父系：公/婆=祖辈，爹/叔/伯=父辈男，姑=父辈女（血亲）。
+    function baseName(name) {
+        return String(name == null ? '' : name).trim()
+            .replace(/^第?(\d+|[〇零一二三四五六七八九十廿卅两]+|[a-zA-Z]+)/, '');
+    }
+    function isBloodName(name) {
+        var b = baseName(name);
+        if (/(姑丈|姑父|姨父|妹夫|姐夫)/.test(b)) return false; // 娶进来的男性姻亲
+        if (/姑/.test(b)) return true;              // 姑妈/姑：血亲女
+        if (/^(公|婆)$/.test(b)) return true;       // 祖辈
+        if (/(爹|叔|伯)/.test(b)) return true;      // 父辈男
+        if (/(妈|娘|婶)/.test(b)) return false;     // 嫁进来的父辈女（姻亲）
+        return true;                                // 认不出默认血亲，避免误伤
+    }
     function rankNum(info, id) { return info[id] && info[id].rank != null ? info[id].rank : 999; }
 
     // 名字定世与 kinship.js 共用一份，避免两处关键字集不一致（老公/姑娘/姑爷等）。
@@ -1005,6 +1022,7 @@ var GraphLayout = (function () {
                 gender: p.gender || '',
                 placeId: p.placeId != null ? p.placeId : null,
                 rank: rankOf(p.name),
+                blood: isBloodName(p.name),
                 isRoot: p.id === rootId,
                 order: order++,
                 w: w,
@@ -1219,6 +1237,9 @@ var GraphLayout = (function () {
                 for (var i = 0; i < max; i++) {
                     var a = g.m[i], b = g.f[i];
                     if (spouseOfLocal[a] || spouseOfLocal[b]) continue;
+                    // 父辈血亲男女是兄妹（如叔爹+姑妈），不能自动配成夫妻；
+                    // 真正的夫妻是一方血亲、一方姻亲（叔爹+4妈、姑妈+姑丈）。
+                    if (info[a].gen === -1 && info[b].gen === -1 && info[a].blood && info[b].blood) continue;
                     spouseOfLocal[a] = b; spouseOfLocal[b] = a;
                     placeSpouses.push([a, b]);
                 }
@@ -1476,7 +1497,10 @@ var GraphLayout = (function () {
                     });
                     cand = elders[0] || root;
                     pTreeParent[id] = cand;
-                    placeTreeParent[id] = cand; // 保存供画树线用
+                    // 父子线只连血亲：姻亲（嫁进来的妈/娘/婶、娶进来的姑丈等）
+                    // 通过婚线进入家族，不挂到长辈下面当子女。
+                    // 但仍放进 pTreeChildren 参与角度分配（配偶摆位会把他/她挪到配偶旁）。
+                    if (info[id].blood) placeTreeParent[id] = cand;
                     (pTreeChildren[cand] = pTreeChildren[cand] || []).push(id);
                     attached[id] = true;
                 });
