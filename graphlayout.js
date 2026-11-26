@@ -1754,23 +1754,25 @@ var GraphLayout = (function () {
             });
         }
 
-        // 按地点分树时，父子线由布局的辈分树（placeTreeParent）决定，而不是数据里的关系边
+        // 普通模式：画数据里的所有关系线。
+        // 按地点分树时只画「地点内父子树线 + 每地点一根连我线」——
+        // 数据里的配偶/兄弟姐妹/其他关系线一律不画，避免连线杂乱。
         if (!groupByPlace) {
             norm.parents.forEach(function (l) {
                 addEdge(l.parentId, l.childId, 'descent',
                     l.displayTypes && l.displayTypes.length ? l.displayTypes : l.parentTypes, l.ris);
             });
+            norm.spouses.forEach(function (l) {
+                addEdge(l.a, l.b, 'spouse', l.types, l.ris);
+            });
+            norm.siblings.forEach(function (l) {
+                addEdge(l.a, l.b, 'sibling', l.types, l.ris);
+            });
+            norm.kin.forEach(function (l) {
+                addEdge(l.a, l.b, 'kin', l.types, l.ris);
+            });
         }
-        norm.spouses.forEach(function (l) {
-            addEdge(l.a, l.b, 'spouse', l.types, l.ris);
-        });
-        norm.siblings.forEach(function (l) {
-            addEdge(l.a, l.b, 'sibling', l.types, l.ris);
-        });
-        norm.kin.forEach(function (l) {
-            addEdge(l.a, l.b, 'kin', l.types, l.ris);
-        });
-        // 按地点分树：画每棵树的"根→子→孙"父子线 + 每个根连到我 + 推断的配偶线
+        // 按地点分树：只画每棵树的"根→子→孙"父子线 + 每个地点一根线连到我
         if (groupByPlace) {
             // 父子线：用布局按辈分算出的树关系
             Object.keys(placeTreeParent).forEach(function (cid) {
@@ -1780,15 +1782,7 @@ var GraphLayout = (function () {
                 if (info[cid].gen === info[pid].gen) return;
                 addEdge(pid, cid, 'descent', [], []);
             });
-            // 推断的配偶线（数据里没 spouse 边时补画）
-            placeSpouses.forEach(function (pair) {
-                // 已有配偶边则不重复画
-                var exists = norm.spouses.some(function (l) {
-                    return (l.a === pair[0] && l.b === pair[1]) || (l.a === pair[1] && l.b === pair[0]);
-                });
-                if (!exists) addEdge(pair[0], pair[1], 'spouse', ['配偶'], []);
-            });
-            // 每个地点树的根连一条线到中心的「我」
+            // 每个地点树的根连一条线到中心的「我」（每地点仅此一条）
             placeRoots.forEach(function (rid) {
                 if (rid === rootId) return;
                 addEdge(rootId, rid, 'kin', [info[rid].name || '']);
