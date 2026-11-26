@@ -437,7 +437,7 @@ var gnGong = nodeOfG(gnG, 'gg'), gnDie = nodeOfG(gnG, 'dd');
 ok(gnGong && gnGong.r < gnDie.r, '15公(一世/公)应比大爹(二世/爹)更靠近我（r ' + gnGong.r.toFixed(0) + ' < ' + gnDie.r.toFixed(0) + '）');
 ok(gnGong && gnGong.gen === -2 && gnDie && gnDie.gen === -1, '按称呼定世：公=一世(-2)、爹=二世(-1)');
 
-// 同地点同排行的一男一女自动摆相邻，但地点分树时不画配偶线（只留根→我线）
+// 同地点同排行的一男一女自动配成夫妻：画配偶线且摆相邻（地点分树时也保留）
 var spP = [
     { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
     { id: 's1', name: '7公', gender: 'm', age: null, titles: [], placeId: 'pS' },
@@ -445,9 +445,25 @@ var spP = [
 ];
 var spG = radialPlaced(spP, [], 'me'); // 无配偶关系边
 var spEdges = spG.edges.filter(function (e) { return e.kind === 'spouse'; });
-ok(spEdges.length === 0, '地点分树时不画配偶线（实际 ' + spEdges.length + '）');
+ok(spEdges.length === 1, '地点分树时仍画配偶线（实际 ' + spEdges.length + '）');
 var s1 = nodeOfG(spG, 's1'), s2 = nodeOfG(spG, 's2');
 ok(s1 && s2 && dist(s1, s2) < 120, '夫妻应摆相邻（实际距离 ' + dist(s1, s2).toFixed(0) + '）');
+
+// 地点分树时，数据里多人连到「我」的关系线不画：每地点只保留辈分最大的根→我一条
+var egoP = [
+    { id: 'me', name: '我', gender: 'm', age: null, titles: [], placeId: null },
+    { id: 'e1', name: '15公', gender: 'm', age: null, titles: [], placeId: 'pE' },
+    { id: 'e2', name: '4爹', gender: 'm', age: null, titles: [], placeId: 'pE' }
+];
+var egoR = [
+    { from: 'e1', to: 'me', type: '15公' }, { from: 'e2', to: 'me', type: '15公' }
+];
+var egoG = radialPlaced(egoP, egoR, 'me');
+var egoLines = egoG.edges.filter(function (e) {
+    return e.kind === 'kin' && (e.x1 === egoG.center.x || e.x2 === egoG.center.x);
+});
+ok(egoLines.length === 1 && egoLines[0].title === '15公',
+    '每地点只有辈分最大的根连我一条线（实际 ' + egoLines.length + ' 条）');
 
 // M2：框下黄色称谓已删除，不可见的长路径称谓不应撑大画布
 var m2p = [
